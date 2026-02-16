@@ -11,9 +11,9 @@ import '../../services/providers.dart';
 /// - No API key is needed.
 /// - The polyline layer draws the train's path from the `polylinePoints`
 ///   list that is already decimated in [TrackingService] (only a point is
-///   appended when ≥ 8 m from the previous vertex, keeping the vertex
-///   count manageable).
-/// - A `MarkerLayer` shows a single marker at the current GPS position.
+///   appended when ≥ 10 m from the previous vertex).
+/// - A green marker shows the **start** of the route.
+/// - A red train icon marker shows the **current** GPS position.
 /// - When *auto-follow* is enabled (default), the `MapController` pans
 ///   the camera to the latest position on every GPS tick.
 class MapScreen extends ConsumerStatefulWidget {
@@ -35,6 +35,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final tracker = ref.watch(trackingProvider);
     final polyline = tracker.polyline;
     final current = tracker.currentLatLng;
+
+    // Start point = first point in polyline (if any).
+    final LatLng? startPoint =
+        polyline.isNotEmpty ? polyline.first : null;
 
     // Auto-follow: pan map to current position.
     if (_autoFollow && current != null) {
@@ -67,34 +71,75 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 userAgentPackageName: 'com.example.trainlogger',
               ),
 
-              // Polyline path.
+              // ── Route polyline (blue, thick, semi-transparent) ──
               if (polyline.length >= 2)
                 PolylineLayer(
                   polylines: [
                     Polyline(
                       points: polyline,
-                      color: Colors.blue,
-                      strokeWidth: 4,
+                      color: Colors.blue.shade700,
+                      strokeWidth: 5.0,
+                      borderColor: Colors.blue.shade900.withOpacity(0.4),
+                      borderStrokeWidth: 1.5,
                     ),
                   ],
                 ),
 
-              // Current position marker.
-              if (current != null)
-                MarkerLayer(
-                  markers: [
+              // ── Markers: start + current position ───────────────
+              MarkerLayer(
+                markers: [
+                  // Green circle at start of route.
+                  if (startPoint != null)
                     Marker(
-                      point: current,
-                      width: 40,
-                      height: 40,
-                      child: const Icon(
-                        Icons.train,
-                        color: Colors.red,
-                        size: 36,
+                      point: startPoint,
+                      width: 28,
+                      height: 28,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2.5),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black26,
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Center(
+                          child: Icon(Icons.flag, color: Colors.white, size: 14),
+                        ),
                       ),
                     ),
-                  ],
-                ),
+
+                  // Red train icon at current position.
+                  if (current != null)
+                    Marker(
+                      point: current,
+                      width: 44,
+                      height: 44,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2.5),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black38,
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Center(
+                          child:
+                              Icon(Icons.train, color: Colors.white, size: 22),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ],
           ),
 
@@ -108,8 +153,37 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               totalDistance: tracker.totalDistanceM,
               nextThreshold: tracker.nextThresholdM,
               isTracking: tracker.isTracking,
+              recordCount: tracker.records.length,
             ),
           ),
+
+          // ── Legend ───────────────────────────────────────────
+          if (polyline.isNotEmpty)
+            Positioned(
+              bottom: 80,
+              left: 16,
+              child: Card(
+                elevation: 3,
+                color: Colors.white.withOpacity(0.92),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _legendItem(Colors.green, 'Start'),
+                      const SizedBox(height: 4),
+                      _legendItem(Colors.blue.shade700, 'Path'),
+                      const SizedBox(height: 4),
+                      _legendItem(Colors.red, 'Current'),
+                    ],
+                  ),
+                ),
+              ),
+            ),
 
           // ── Auto-follow FAB ─────────────────────────────────
           Positioned(
@@ -131,6 +205,22 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               ),
             ),
           ),
+
+          // ── Fit-route FAB (zoom to show entire path) ────────
+          if (polyline.length >= 2)
+            Positioned(
+              bottom: 72,
+              right: 16,
+              child: FloatingActionButton.small(
+                heroTag: 'fitroute',
+                tooltip: 'Fit entire route',
+                onPressed: () {
+                  _fitRoute(polyline);
+                },
+                backgroundColor: Colors.blueGrey,
+                child: const Icon(Icons.zoom_out_map, color: Colors.white),
+              ),
+            ),
 
           // ── Start / Stop on map ─────────────────────────────
           Positioned(
@@ -162,6 +252,52 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       ),
     );
   }
+
+  /// Zoom the map to fit the entire route polyline with padding.
+  void _fitRoute(List<LatLng> points) {
+    if (points.length < 2) return;
+
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+
+    final bounds = LatLngBounds(
+      LatLng(minLat, minLng),
+      LatLng(maxLat, maxLng),
+    );
+
+    _mapCtrl.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        padding: const EdgeInsets.all(60),
+      ),
+    );
+
+    setState(() => _autoFollow = false);
+  }
+
+  Widget _legendItem(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 11)),
+      ],
+    );
+  }
 }
 
 // ── Map overlay panel ───────────────────────────────────────────────
@@ -171,12 +307,14 @@ class _MapOverlay extends StatelessWidget {
   final double totalDistance;
   final double nextThreshold;
   final bool isTracking;
+  final int recordCount;
 
   const _MapOverlay({
     required this.speedKmh,
     required this.totalDistance,
     required this.nextThreshold,
     required this.isTracking,
+    required this.recordCount,
   });
 
   @override
@@ -193,6 +331,7 @@ class _MapOverlay extends StatelessWidget {
             _item('Speed', '${speedKmh.toStringAsFixed(1)} km/h'),
             _item('Dist', _fmt(totalDistance)),
             _item('Next', _fmt(nextThreshold)),
+            _item('Logs', '$recordCount'),
             Icon(
               isTracking ? Icons.fiber_manual_record : Icons.stop_circle,
               color: isTracking ? Colors.red : Colors.grey,
