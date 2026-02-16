@@ -107,6 +107,9 @@ class TrackingNotifier extends ChangeNotifier {
   Future<void> exportCsv() async {
     await ExportService.exportAndShare(_records);
   }
+
+  /// Open device Settings so the user can grant location permission.
+  Future<void> openSettings() => _locationSvc.openSettings();
 }
 
 final trackingProvider =

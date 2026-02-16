@@ -83,4 +83,49 @@ void main() {
       expect(nextThreshold, 300.0); // next pending is 300
     });
   });
+
+  // ── Noise filter configuration tests ────────────────────────────
+
+  group('filter constants are sensible', () {
+    test('min movement > typical GPS drift', () {
+      // Typical indoor drift: 1-5 m.  Our gate must exceed that.
+      expect(TrackingService.kMinMovementM, greaterThanOrEqualTo(5.0));
+    });
+
+    test('max accuracy rejects poor fixes', () {
+      expect(TrackingService.kMaxAccuracyM, lessThanOrEqualTo(25.0));
+    });
+
+    test('min speed rejects stationary', () {
+      // 1 m/s = 3.6 km/h — a very slow walking pace.
+      expect(TrackingService.kMinSpeedMs, greaterThanOrEqualTo(1.0));
+    });
+
+    test('max speed allows high-speed trains', () {
+      // 83 m/s ≈ 300 km/h
+      expect(TrackingService.kMaxSpeedMs, greaterThanOrEqualTo(80.0));
+    });
+  });
+
+  // ── Geodesic distance sanity check ──────────────────────────────
+
+  group('geodesicDistance', () {
+    test('Tashkent to nearby point ≈ known distance', () {
+      // Two points ~100 m apart in Tashkent
+      final dist = TrackingService.geodesicDistance(
+        41.2995, 69.2401,
+        41.3004, 69.2401,
+      );
+      // ~100 m (1 degree lat ≈ 111 km, 0.0009° ≈ 100 m)
+      expect(dist, closeTo(100.0, 10.0));
+    });
+
+    test('same point → 0 m', () {
+      final dist = TrackingService.geodesicDistance(
+        41.2995, 69.2401,
+        41.2995, 69.2401,
+      );
+      expect(dist, closeTo(0.0, 0.01));
+    });
+  });
 }

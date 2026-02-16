@@ -126,7 +126,7 @@ class DashboardScreen extends ConsumerWidget {
   }
 
   void _showPermissionDialog(
-      BuildContext context, dynamic tracker) {
+      BuildContext context, TrackingNotifier tracker) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -142,7 +142,7 @@ class DashboardScreen extends ConsumerWidget {
           FilledButton(
             onPressed: () {
               Navigator.pop(context);
-              tracker._locationSvc.openSettings();
+              tracker.openSettings();
             },
             child: const Text('Open Settings'),
           ),
@@ -151,7 +151,7 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  void _confirmNewSession(BuildContext context, dynamic tracker) {
+  void _confirmNewSession(BuildContext context, TrackingNotifier tracker) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
