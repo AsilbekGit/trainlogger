@@ -107,10 +107,13 @@ class TrackingNotifier extends ChangeNotifier {
   Future<void> exportCsv() async {
     await ExportService.exportAndShare(_records);
   }
+
+  /// Open device Settings so the user can grant location permission.
+  Future<void> openSettings() => _locationSvc.openSettings();
 }
 
 final trackingProvider =
-    ChangeNotifierProvider<TrackingNotifier>((ref) {
+ChangeNotifierProvider<TrackingNotifier>((ref) {
   final loc = ref.watch(locationServiceProvider);
   final store = ref.watch(storageServiceProvider);
   return TrackingNotifier(loc, store);
