@@ -43,6 +43,28 @@ class LogRecord extends HiveObject {
   @HiveField(9)
   final double totalDistanceM;
 
+  /// Menger curvature expressed as a percentage (curvature × 100).
+  ///
+  /// Computed from three consecutive logged points P1, P2, P3 using:
+  ///   area   = |cross product| / 2
+  ///   κ      = (4 × area) / (d12 × d23 × d13)   — this equals 1/R
+  ///   result = κ × 100
+  ///
+  /// Where R is the radius of the circumscribed circle through the 3 points.
+  ///   • 0 %   = perfectly straight (R = ∞)
+  ///   • 0.1 % = gentle curve (R ≈ 1000 m)
+  ///   • 0.5 % = moderate curve (R ≈ 200 m)
+  ///   • 1.0 % = sharp curve (R ≈ 100 m)
+  ///
+  /// Null for the first two records (fewer than 3 points available).
+  @HiveField(10)
+  final double? curvaturePercent;
+
+  /// Radius of the circumscribed circle in metres (1/κ).
+  /// Null when curvature is null or zero (straight line → R = ∞).
+  @HiveField(11)
+  final double? curveRadiusM;
+
   LogRecord({
     required this.index,
     required this.timestamp,
@@ -54,12 +76,15 @@ class LogRecord extends HiveObject {
     this.elevationDeltaM,
     this.gradePercent,
     required this.totalDistanceM,
+    this.curvaturePercent,
+    this.curveRadiusM,
   });
 
   /// CSV header row.
   static String get csvHeader =>
       'index,timestamp,latitude,longitude,speed_kmh,altitude_m,'
-      'segment_distance_m,elevation_delta_m,grade_percent,total_distance_m';
+      'segment_distance_m,elevation_delta_m,grade_percent,'
+      'curvature_percent,curve_radius_m,total_distance_m';
 
   /// Convert this record to a CSV row.
   String toCsvRow() {
@@ -68,6 +93,8 @@ class LogRecord extends HiveObject {
         '${segmentDistanceM.toStringAsFixed(2)},'
         '${elevationDeltaM?.toStringAsFixed(2) ?? ""},'
         '${gradePercent?.toStringAsFixed(3) ?? ""},'
+        '${curvaturePercent?.toStringAsFixed(4) ?? ""},'
+        '${curveRadiusM?.toStringAsFixed(1) ?? ""},'
         '${totalDistanceM.toStringAsFixed(2)}';
   }
 }

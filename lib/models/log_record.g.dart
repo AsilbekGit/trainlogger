@@ -1,10 +1,6 @@
-// GENERATED CODE - DO NOT MODIFY BY HAND
+// GENERATED CODE - hand-written Hive TypeAdapter
 
 part of 'log_record.dart';
-
-// **************************************************************************
-// TypeAdapterGenerator
-// **************************************************************************
 
 class LogRecordAdapter extends TypeAdapter<LogRecord> {
   @override
@@ -27,13 +23,15 @@ class LogRecordAdapter extends TypeAdapter<LogRecord> {
       elevationDeltaM: fields[7] as double?,
       gradePercent: fields[8] as double?,
       totalDistanceM: fields[9] as double,
+      curvaturePercent: fields[10] as double?,
+      curveRadiusM: fields[11] as double?,
     );
   }
 
   @override
   void write(BinaryWriter writer, LogRecord obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(12) // number of fields
       ..writeByte(0)
       ..write(obj.index)
       ..writeByte(1)
@@ -53,7 +51,11 @@ class LogRecordAdapter extends TypeAdapter<LogRecord> {
       ..writeByte(8)
       ..write(obj.gradePercent)
       ..writeByte(9)
-      ..write(obj.totalDistanceM);
+      ..write(obj.totalDistanceM)
+      ..writeByte(10)
+      ..write(obj.curvaturePercent)
+      ..writeByte(11)
+      ..write(obj.curveRadiusM);
   }
 
   @override

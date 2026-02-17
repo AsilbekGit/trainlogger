@@ -37,9 +37,15 @@ class TrackingSession {
   /// Previous accepted GPS point (for distance accumulation).
   GpsPoint? previousPoint;
 
-  /// Location of the *last logged* 100 m record (for segment distance &
-  /// grade computation).
+  /// Location of the *last logged* 100 m record (for segment distance,
+  /// grade computation, and curvature).
+  /// This is P(n) in the Menger curvature triangle.
   GpsPoint? lastLoggedPoint;
+
+  /// Location of the *second-to-last logged* 100 m record.
+  /// This is P(n-1) in the Menger curvature triangle P(n-1) → P(n) → P(n+1).
+  /// Needed to compute curvature when P(n+1) arrives.
+  GpsPoint? secondLastLoggedPoint;
 
   /// Rolling window of recent altitude samples for median smoothing.
   final List<double> altitudeWindow = [];
@@ -60,6 +66,7 @@ class TrackingSession {
     recordIndex = 0;
     previousPoint = null;
     lastLoggedPoint = null;
+    secondLastLoggedPoint = null;
     altitudeWindow.clear();
     polylinePoints.clear();
     currentSpeedKmh = 0.0;

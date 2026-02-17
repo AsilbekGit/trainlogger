@@ -15,20 +15,14 @@ class DashboardScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Train Logger'),
         actions: [
-          // Export CSV
           IconButton(
             icon: const Icon(Icons.share),
             tooltip: 'Export CSV',
-            onPressed: records.isEmpty
-                ? null
-                : () => tracker.exportCsv(),
+            onPressed: records.isEmpty ? null : () => tracker.exportCsv(),
           ),
-          // New session
           PopupMenuButton<String>(
             onSelected: (v) {
-              if (v == 'new') {
-                _confirmNewSession(context, tracker);
-              }
+              if (v == 'new') _confirmNewSession(context, tracker);
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'new', child: Text('New Session')),
@@ -38,7 +32,6 @@ class DashboardScreen extends ConsumerWidget {
       ),
       body: Column(
         children: [
-          // ── Live stats panel ──────────────────────────────────
           _StatsPanel(
             speedKmh: tracker.speedKmh,
             totalDistance: tracker.totalDistanceM,
@@ -47,10 +40,7 @@ class DashboardScreen extends ConsumerWidget {
             recordCount: records.length,
             isTracking: isTracking,
           ),
-
           const Divider(height: 1),
-
-          // ── Start / Stop button ───────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
             child: FilledButton.icon(
@@ -64,10 +54,7 @@ class DashboardScreen extends ConsumerWidget {
               ),
             ),
           ),
-
           const Divider(height: 1),
-
-          // ── Record list ───────────────────────────────────────
           Expanded(
             child: records.isEmpty
                 ? const Center(
@@ -78,10 +65,23 @@ class DashboardScreen extends ConsumerWidget {
                     ),
                   )
                 : ListView.builder(
-                    reverse: true, // newest at top
+                    reverse: true,
                     itemCount: records.length,
                     itemBuilder: (ctx, i) {
                       final r = records[records.length - 1 - i];
+
+                      // Curvature display: percent + radius.
+                      String curveStr;
+                      if (r.curvaturePercent == null) {
+                        curveStr = '—';
+                      } else {
+                        final pct = r.curvaturePercent!;
+                        final radiusStr = r.curveRadiusM != null
+                            ? 'R=${r.curveRadiusM!.toInt()}m'
+                            : 'R=∞';
+                        curveStr = '${pct.toStringAsFixed(3)}% ($radiusStr)';
+                      }
+
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: Colors.blueGrey,
@@ -96,11 +96,11 @@ class DashboardScreen extends ConsumerWidget {
                           '${r.speedKmh.toStringAsFixed(1)} km/h',
                         ),
                         subtitle: Text(
-                          'Grade: ${r.gradePercent?.toStringAsFixed(2) ?? "N/A"} %  •  '
-                          'Alt: ${r.altitudeM.toStringAsFixed(1)} m',
+                          'Grade: ${r.gradePercent?.toStringAsFixed(2) ?? "N/A"}%  •  '
+                          'Curve: $curveStr',
                         ),
                         trailing: Text(
-                          r.timestamp.substring(11, 19), // HH:mm:ss
+                          r.timestamp.substring(11, 19),
                           style: const TextStyle(
                               fontSize: 12, color: Colors.grey),
                         ),
@@ -125,8 +125,7 @@ class DashboardScreen extends ConsumerWidget {
     }
   }
 
-  void _showPermissionDialog(
-      BuildContext context, TrackingNotifier tracker) {
+  void _showPermissionDialog(BuildContext context, TrackingNotifier tracker) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -178,8 +177,6 @@ class DashboardScreen extends ConsumerWidget {
   }
 }
 
-// ── Stats panel widget ──────────────────────────────────────────────
-
 class _StatsPanel extends StatelessWidget {
   final double speedKmh;
   final double totalDistance;
@@ -206,7 +203,6 @@ class _StatsPanel extends StatelessWidget {
           : Colors.grey.withOpacity(0.06),
       child: Column(
         children: [
-          // Big speed display
           Text(
             '${speedKmh.toStringAsFixed(1)} km/h',
             style: Theme.of(context)
@@ -219,21 +215,13 @@ class _StatsPanel extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _StatChip(
-                label: 'Distance',
-                value: _formatDistance(totalDistance),
-              ),
+                  label: 'Distance', value: _formatDistance(totalDistance)),
               _StatChip(
-                label: 'Next Log',
-                value: _formatDistance(nextThreshold),
-              ),
+                  label: 'Next Log', value: _formatDistance(nextThreshold)),
               _StatChip(
-                label: 'Altitude',
-                value: '${altitude.toStringAsFixed(1)} m',
-              ),
-              _StatChip(
-                label: 'Records',
-                value: '$recordCount',
-              ),
+                  label: 'Altitude',
+                  value: '${altitude.toStringAsFixed(1)} m'),
+              _StatChip(label: 'Records', value: '$recordCount'),
             ],
           ),
         ],
