@@ -1,4 +1,4 @@
-import 'dart:math';
+
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import '../models/log_record.dart';
