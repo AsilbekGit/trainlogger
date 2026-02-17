@@ -39,14 +39,20 @@ class TrackingNotifier extends ChangeNotifier {
 
   TrackingNotifier(this._locationSvc, this._storageSvc) {
     _trackingSvc = TrackingService(session);
-    // Load previously persisted records.
-    _records = _storageSvc.getAll();
-    // Restore session counters if resuming.
-    if (_records.isNotEmpty) {
-      session.recordIndex = _records.last.index;
-      session.totalDistanceMeters = _records.last.totalDistanceM;
-      session.nextLogThresholdMeters =
-          session.totalDistanceMeters + TrackingService.kLogIntervalM;
+
+    // Load previously persisted records (safe — returns [] on error).
+    try {
+      _records = _storageSvc.getAll();
+      // Restore session counters if resuming.
+      if (_records.isNotEmpty) {
+        session.recordIndex = _records.last.index;
+        session.totalDistanceMeters = _records.last.totalDistanceM;
+        session.nextLogThresholdMeters =
+            session.totalDistanceMeters + TrackingService.kLogIntervalM;
+      }
+    } catch (e) {
+      debugPrint('[TrackingNotifier] Error loading records: $e');
+      _records = [];
     }
   }
 
@@ -90,7 +96,7 @@ class TrackingNotifier extends ChangeNotifier {
       _storageSvc.addAll(newRecords);
     }
 
-    notifyListeners(); // Triggers UI rebuild for speed / polyline / records.
+    notifyListeners();
   }
 
   // ── Session management ────────────────────────────────────────
@@ -113,7 +119,7 @@ class TrackingNotifier extends ChangeNotifier {
 }
 
 final trackingProvider =
-ChangeNotifierProvider<TrackingNotifier>((ref) {
+    ChangeNotifierProvider<TrackingNotifier>((ref) {
   final loc = ref.watch(locationServiceProvider);
   final store = ref.watch(storageServiceProvider);
   return TrackingNotifier(loc, store);

@@ -8,8 +8,14 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialise Hive storage before the app starts.
+  // Wrapped in try-catch so the app always launches, even if storage
+  // is temporarily broken.
   final storage = StorageService();
-  await storage.init();
+  try {
+    await storage.init();
+  } catch (e) {
+    debugPrint('[main] Storage init failed, continuing with empty state: $e');
+  }
 
   runApp(
     ProviderScope(
