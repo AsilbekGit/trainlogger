@@ -1,71 +1,147 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/log_record.dart';
 
-/// Persists [LogRecord]s using Hive so data survives app restarts.
+/// Persists [LogRecord]s using a simple JSON file.
 ///
-/// **Crash-safe initialisation:**
-/// If the Hive box file is corrupted (e.g. the app was killed mid-write,
-/// or iOS reclaimed disk space), [init] catches the error, deletes the
-/// broken box, and reopens a fresh one.  This prevents the app from
-/// failing to launch entirely.
+/// **Why not Hive?**
+/// Hive uses a binary format that corrupts when iOS kills the app mid-write
+/// (which iOS does aggressively for background apps).  A corrupted Hive box
+/// prevents the app from launching at all.
+///
+/// **Why JSON file works:**
+/// - Human-readable, easy to debug.
+/// - We use atomic writes (write to .tmp, then rename) so even if the app
+///   is killed mid-write, the original file is untouched.
+/// - If the JSON is somehow malformed, we catch the parse error and start
+///   fresh instead of crashing.
+/// - Works identically on iOS and Android.
 class StorageService {
-  static const String _boxName = 'log_records';
-  late Box<LogRecord> _box;
+  static const String _fileName = 'train_log_records.json';
+  static const String _tmpFileName = 'train_log_records.tmp';
 
+  List<LogRecord> _records = [];
+  late String _filePath;
+  late String _tmpFilePath;
+
+  /// Initialise storage.  Always succeeds — never crashes the app.
   Future<void> init() async {
-    await Hive.initFlutter();
-
-    // Only register adapter once (guards against hot-restart duplicates).
-    if (!Hive.isAdapterRegistered(0)) {
-      Hive.registerAdapter(LogRecordAdapter());
-    }
-
     try {
-      _box = await Hive.openBox<LogRecord>(_boxName);
+      final dir = await getApplicationDocumentsDirectory();
+      _filePath = '${dir.path}/$_fileName';
+      _tmpFilePath = '${dir.path}/$_tmpFileName';
+      await _loadFromDisk();
     } catch (e) {
-      // Box is corrupted → delete it and open a fresh one.
-      debugPrint('[StorageService] Hive box corrupted, resetting: $e');
-      await Hive.deleteBoxFromDisk(_boxName);
-      _box = await Hive.openBox<LogRecord>(_boxName);
+      debugPrint('[StorageService] init error (starting empty): $e');
+      _records = [];
     }
   }
 
   /// All records in insertion order.
-  List<LogRecord> getAll() {
-    try {
-      return _box.values.toList();
-    } catch (e) {
-      debugPrint('[StorageService] Error reading records: $e');
-      return [];
-    }
-  }
+  List<LogRecord> getAll() => List.from(_records);
 
-  /// Append a new record.
+  /// Append a new record and persist.
   Future<void> add(LogRecord record) async {
-    try {
-      await _box.add(record);
-    } catch (e) {
-      debugPrint('[StorageService] Error adding record: $e');
-    }
+    _records.add(record);
+    await _saveToDisk();
   }
 
-  /// Append multiple records at once.
+  /// Append multiple records and persist once.
   Future<void> addAll(List<LogRecord> records) async {
-    for (final r in records) {
-      await add(r);
+    _records.addAll(records);
+    await _saveToDisk();
+  }
+
+  /// Wipe all stored records.
+  Future<void> clearAll() async {
+    _records.clear();
+    await _saveToDisk();
+  }
+
+  int get count => _records.length;
+
+  // ── Private: disk I/O ─────────────────────────────────────────
+
+  /// Load records from the JSON file on disk.
+  Future<void> _loadFromDisk() async {
+    final file = File(_filePath);
+    if (!await file.exists()) {
+      _records = [];
+      return;
+    }
+
+    try {
+      final jsonString = await file.readAsString();
+      if (jsonString.trim().isEmpty) {
+        _records = [];
+        return;
+      }
+
+      final List<dynamic> jsonList = json.decode(jsonString);
+      _records = jsonList.map((m) => _recordFromJson(m)).toList();
+      debugPrint('[StorageService] Loaded ${_records.length} records');
+    } catch (e) {
+      // JSON is malformed → start fresh (don't crash).
+      debugPrint('[StorageService] Corrupt file, resetting: $e');
+      _records = [];
+      // Delete the bad file so it doesn't happen again.
+      try {
+        await file.delete();
+      } catch (_) {}
     }
   }
 
-  /// Wipe all stored records (new session / clear data).
-  Future<void> clearAll() async {
-    await _box.clear();
+  /// Persist records to disk using atomic write:
+  ///   1. Write to .tmp file
+  ///   2. Rename .tmp → .json
+  /// If the app is killed between 1 and 2, the original .json is untouched.
+  Future<void> _saveToDisk() async {
+    try {
+      final jsonList = _records.map((r) => _recordToJson(r)).toList();
+      final jsonString = json.encode(jsonList);
+
+      // Write to temp file first.
+      final tmpFile = File(_tmpFilePath);
+      await tmpFile.writeAsString(jsonString, flush: true);
+
+      // Atomic rename: this is a single OS operation that can't half-fail.
+      await tmpFile.rename(_filePath);
+    } catch (e) {
+      debugPrint('[StorageService] Save error: $e');
+    }
   }
 
-  /// Compact the box file to reclaim disk space.
-  Future<void> compact() async {
-    await _box.compact();
-  }
+  // ── JSON serialization ────────────────────────────────────────
 
-  int get count => _box.length;
+  Map<String, dynamic> _recordToJson(LogRecord r) => {
+        'index': r.index,
+        'timestamp': r.timestamp,
+        'latitude': r.latitude,
+        'longitude': r.longitude,
+        'speedKmh': r.speedKmh,
+        'altitudeM': r.altitudeM,
+        'segmentDistanceM': r.segmentDistanceM,
+        'elevationDeltaM': r.elevationDeltaM,
+        'gradePercent': r.gradePercent,
+        'totalDistanceM': r.totalDistanceM,
+        'curvaturePercent': r.curvaturePercent,
+        'curveRadiusM': r.curveRadiusM,
+      };
+
+  LogRecord _recordFromJson(Map<String, dynamic> m) => LogRecord(
+        index: m['index'] as int,
+        timestamp: m['timestamp'] as String,
+        latitude: (m['latitude'] as num).toDouble(),
+        longitude: (m['longitude'] as num).toDouble(),
+        speedKmh: (m['speedKmh'] as num).toDouble(),
+        altitudeM: (m['altitudeM'] as num).toDouble(),
+        segmentDistanceM: (m['segmentDistanceM'] as num).toDouble(),
+        elevationDeltaM: (m['elevationDeltaM'] as num?)?.toDouble(),
+        gradePercent: (m['gradePercent'] as num?)?.toDouble(),
+        totalDistanceM: (m['totalDistanceM'] as num).toDouble(),
+        curvaturePercent: (m['curvaturePercent'] as num?)?.toDouble(),
+        curveRadiusM: (m['curveRadiusM'] as num?)?.toDouble(),
+      );
 }

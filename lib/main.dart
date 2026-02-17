@@ -7,15 +7,10 @@ import 'ui/screens/home_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialise Hive storage before the app starts.
-  // Wrapped in try-catch so the app always launches, even if storage
-  // is temporarily broken.
+  // Initialise JSON file storage.
+  // This never crashes — worst case it starts with empty data.
   final storage = StorageService();
-  try {
-    await storage.init();
-  } catch (e) {
-    debugPrint('[main] Storage init failed, continuing with empty state: $e');
-  }
+  await storage.init();
 
   runApp(
     ProviderScope(
