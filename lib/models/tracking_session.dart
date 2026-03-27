@@ -25,6 +25,9 @@ class GpsPoint {
 class TrackingSession {
   bool isTracking = false;
 
+  /// When the current tracking session was started.
+  DateTime? startTime;
+
   /// Running cumulative distance (metres).
   double totalDistanceMeters = 0.0;
 
@@ -61,6 +64,7 @@ class TrackingSession {
 
   void reset() {
     isTracking = false;
+    startTime = null;
     totalDistanceMeters = 0.0;
     nextLogThresholdMeters = 100.0;
     recordIndex = 0;

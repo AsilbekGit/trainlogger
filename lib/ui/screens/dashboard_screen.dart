@@ -39,6 +39,7 @@ class DashboardScreen extends ConsumerWidget {
             altitude: tracker.altitudeM,
             recordCount: records.length,
             isTracking: isTracking,
+            elapsed: tracker.elapsed,
           ),
           const Divider(height: 1),
           Padding(
@@ -184,6 +185,7 @@ class _StatsPanel extends StatelessWidget {
   final double altitude;
   final int recordCount;
   final bool isTracking;
+  final Duration elapsed;
 
   const _StatsPanel({
     required this.speedKmh,
@@ -192,6 +194,7 @@ class _StatsPanel extends StatelessWidget {
     required this.altitude,
     required this.recordCount,
     required this.isTracking,
+    required this.elapsed,
   });
 
   @override
@@ -209,6 +212,15 @@ class _StatsPanel extends StatelessWidget {
                 .textTheme
                 .displaySmall
                 ?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          // ── Elapsed time ──────────────────────────────────
+          Text(
+            _formatDuration(elapsed),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: isTracking ? Colors.green.shade700 : Colors.grey,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
           ),
           const SizedBox(height: 8),
           Row(
@@ -232,6 +244,14 @@ class _StatsPanel extends StatelessWidget {
   String _formatDistance(double m) {
     if (m >= 1000) return '${(m / 1000).toStringAsFixed(2)} km';
     return '${m.toInt()} m';
+  }
+
+  /// Format a [Duration] as HH:MM:SS.
+  String _formatDuration(Duration d) {
+    final hours = d.inHours.toString().padLeft(2, '0');
+    final minutes = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$seconds';
   }
 }
 

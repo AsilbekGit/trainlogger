@@ -34,6 +34,7 @@ class TrackingNotifier extends ChangeNotifier {
   late final TrackingService _trackingSvc;
 
   StreamSubscription<Position>? _gpsSub;
+  Timer? _elapsedTimer;
   List<LogRecord> _records = [];
   LatLng? currentLatLng;
 
@@ -64,6 +65,13 @@ class TrackingNotifier extends ChangeNotifier {
   double get altitudeM => session.currentAltitude;
   List<LatLng> get polyline => session.polylinePoints;
 
+  /// Elapsed duration since tracking started.  Returns [Duration.zero] when
+  /// not tracking or before the first session start.
+  Duration get elapsed {
+    if (session.startTime == null) return Duration.zero;
+    return DateTime.now().difference(session.startTime!);
+  }
+
   // ── Start / Stop ──────────────────────────────────────────────
 
   Future<bool> startTracking() async {
@@ -73,6 +81,15 @@ class TrackingNotifier extends ChangeNotifier {
     _locationSvc.startListening();
     _gpsSub = _locationSvc.positionStream.listen(_onPosition);
     session.isTracking = true;
+    session.startTime ??= DateTime.now();
+
+    // Tick every second so the elapsed-time UI stays up to date.
+    _elapsedTimer?.cancel();
+    _elapsedTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => notifyListeners(),
+    );
+
     notifyListeners();
     return true;
   }
@@ -80,6 +97,8 @@ class TrackingNotifier extends ChangeNotifier {
   void stopTracking() {
     _gpsSub?.cancel();
     _gpsSub = null;
+    _elapsedTimer?.cancel();
+    _elapsedTimer = null;
     _locationSvc.stopListening();
     session.isTracking = false;
     notifyListeners();
@@ -116,6 +135,12 @@ class TrackingNotifier extends ChangeNotifier {
 
   /// Open device Settings so the user can grant location permission.
   Future<void> openSettings() => _locationSvc.openSettings();
+
+  @override
+  void dispose() {
+    _elapsedTimer?.cancel();
+    super.dispose();
+  }
 }
 
 final trackingProvider =

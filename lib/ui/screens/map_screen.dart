@@ -154,6 +154,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               nextThreshold: tracker.nextThresholdM,
               isTracking: tracker.isTracking,
               recordCount: tracker.records.length,
+              elapsed: tracker.elapsed,
             ),
           ),
 
@@ -308,6 +309,7 @@ class _MapOverlay extends StatelessWidget {
   final double nextThreshold;
   final bool isTracking;
   final int recordCount;
+  final Duration elapsed;
 
   const _MapOverlay({
     required this.speedKmh,
@@ -315,6 +317,7 @@ class _MapOverlay extends StatelessWidget {
     required this.nextThreshold,
     required this.isTracking,
     required this.recordCount,
+    required this.elapsed,
   });
 
   @override
@@ -330,7 +333,7 @@ class _MapOverlay extends StatelessWidget {
           children: [
             _item('Speed', '${speedKmh.toStringAsFixed(1)} km/h'),
             _item('Dist', _fmt(totalDistance)),
-            _item('Next', _fmt(nextThreshold)),
+            _item('Time', _fmtDuration(elapsed)),
             _item('Logs', '$recordCount'),
             Icon(
               isTracking ? Icons.fiber_manual_record : Icons.stop_circle,
@@ -357,5 +360,13 @@ class _MapOverlay extends StatelessWidget {
   String _fmt(double m) {
     if (m >= 1000) return '${(m / 1000).toStringAsFixed(2)} km';
     return '${m.toInt()} m';
+  }
+
+  /// Format a [Duration] as HH:MM:SS.
+  String _fmtDuration(Duration d) {
+    final hours = d.inHours.toString().padLeft(2, '0');
+    final minutes = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes:$seconds';
   }
 }
