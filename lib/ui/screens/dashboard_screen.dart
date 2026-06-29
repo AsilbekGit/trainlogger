@@ -60,7 +60,7 @@ class DashboardScreen extends ConsumerWidget {
             child: records.isEmpty
                 ? const Center(
                     child: Text(
-                      'No records yet.\nStart tracking and travel 100 m.',
+                      'No records yet.\nStart tracking and travel 50 m.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),

@@ -26,6 +26,10 @@ class StorageService {
   late String _filePath;
   late String _tmpFilePath;
 
+  /// Serialises disk writes so two rapid saves can't race on the temp file
+  /// (concurrent write + rename would defeat the atomic-rename guarantee).
+  Future<void> _writeChain = Future<void>.value();
+
   /// Initialise storage.  Always succeeds — never crashes the app.
   Future<void> init() async {
     try {
@@ -45,19 +49,19 @@ class StorageService {
   /// Append a new record and persist.
   Future<void> add(LogRecord record) async {
     _records.add(record);
-    await _saveToDisk();
+    await _enqueueSave();
   }
 
   /// Append multiple records and persist once.
   Future<void> addAll(List<LogRecord> records) async {
     _records.addAll(records);
-    await _saveToDisk();
+    await _enqueueSave();
   }
 
   /// Wipe all stored records.
   Future<void> clearAll() async {
     _records.clear();
-    await _saveToDisk();
+    await _enqueueSave();
   }
 
   int get count => _records.length;
@@ -91,6 +95,13 @@ class StorageService {
         await file.delete();
       } catch (_) {}
     }
+  }
+
+  /// Queue a save to run after any in-flight save completes, guaranteeing a
+  /// single writer at a time.
+  Future<void> _enqueueSave() {
+    _writeChain = _writeChain.then((_) => _saveToDisk());
+    return _writeChain;
   }
 
   /// Persist records to disk using atomic write:

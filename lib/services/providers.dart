@@ -19,7 +19,13 @@ final locationServiceProvider = Provider<LocationService>((ref) {
 });
 
 final storageServiceProvider = Provider<StorageService>((ref) {
-  return StorageService();
+  // Must be overridden in main() with an initialised StorageService.
+  // Throwing (instead of returning an un-initialised instance) makes a missing
+  // override fail loudly in tests / alternate entrypoints instead of silently
+  // not persisting.
+  throw UnimplementedError(
+    'storageServiceProvider must be overridden in main()',
+  );
 });
 
 // ── Tracking Notifier ───────────────────────────────────────────────
@@ -44,7 +50,10 @@ class TrackingNotifier extends ChangeNotifier {
     // Load previously persisted records (safe — returns [] on error).
     try {
       _records = _storageSvc.getAll();
-      // Restore session counters if resuming.
+      // Restore session counters if resuming.  Note: only the last clean
+      // milestone is restored — the sub-interval remainder (up to one fix of
+      // real distance) is lost, and because the GPS history points aren't
+      // persisted the first record after a resume has null curvature.
       if (_records.isNotEmpty) {
         session.recordIndex = _records.last.index;
         session.totalDistanceMeters = _records.last.totalDistanceM;
@@ -79,7 +88,10 @@ class TrackingNotifier extends ChangeNotifier {
     if (!ok) return false;
 
     _locationSvc.startListening();
-    _gpsSub = _locationSvc.positionStream.listen(_onPosition);
+    _gpsSub = _locationSvc.positionStream.listen(
+      _onPosition,
+      onError: _onPositionError,
+    );
     session.isTracking = true;
     session.startTime ??= DateTime.now();
 
@@ -116,6 +128,15 @@ class TrackingNotifier extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  /// Handle errors from the GPS stream (location services disabled mid-trip,
+  /// permission revoked, …).  Previously these were unhandled and silently
+  /// swallowed by the zone while the UI kept showing "tracking".  We log and
+  /// stop so the UI reflects reality and the user can restart.
+  void _onPositionError(Object error, StackTrace _) {
+    debugPrint('[TrackingNotifier] GPS stream error: $error');
+    stopTracking();
   }
 
   // ── Session management ────────────────────────────────────────

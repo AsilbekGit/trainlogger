@@ -1,5 +1,5 @@
 /// A single logged record created every time cumulative distance
-/// crosses a 100 m threshold (100 m, 200 m, 300 m, …).
+/// crosses a fixed distance threshold (every 50 m: 50 m, 100 m, 150 m, …).
 class LogRecord {
   final int index;
   final String timestamp; // ISO 8601
@@ -9,7 +9,7 @@ class LogRecord {
   final double altitudeM;
 
   /// Geodesic distance between this record's position and the previous
-  /// record's position.  Should be ≈ 100 m under normal conditions.
+  /// record's position.  Should be ≈ 50 m under normal conditions.
   final double segmentDistanceM;
 
   /// Altitude change since the last logged record (may be null when

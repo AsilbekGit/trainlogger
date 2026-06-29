@@ -1,30 +1,27 @@
-// // This is a basic Flutter widget test.
-// //
-// // To perform an interaction with a widget in your test, use the WidgetTester
-// // utility in the flutter_test package. For example, you can send tap and scroll
-// // gestures. You can also use WidgetTester to find child widgets in the widget
-// // tree, read text, and verify that the values of widget properties are correct.
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:train_logger/services/providers.dart';
+import 'package:train_logger/services/storage_service.dart';
+import 'package:train_logger/ui/screens/dashboard_screen.dart';
 
-// import 'package:flutter/material.dart';
-// import 'package:flutter_test/flutter_test.dart';
+void main() {
+  testWidgets('Dashboard shows the empty state when there are no records',
+      (tester) async {
+    // storageServiceProvider must be overridden (it throws by default).
+    // An un-initialised StorageService is fine here: getAll() reads the
+    // in-memory list, not the disk.
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          storageServiceProvider.overrideWithValue(StorageService()),
+        ],
+        child: const MaterialApp(home: DashboardScreen()),
+      ),
+    );
 
-// import 'package:train_logger/main.dart';
-
-// void main() {
-//   testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-//     // Build our app and trigger a frame.
-//     await tester.pumpWidget(const MyApp());
-
-//     // Verify that our counter starts at 0.
-//     expect(find.text('0'), findsOneWidget);
-//     expect(find.text('1'), findsNothing);
-
-//     // Tap the '+' icon and trigger a frame.
-//     await tester.tap(find.byIcon(Icons.add));
-//     await tester.pump();
-
-//     // Verify that our counter has incremented.
-//     expect(find.text('0'), findsNothing);
-//     expect(find.text('1'), findsOneWidget);
-//   });
-// }
+    expect(find.text('Train Logger'), findsOneWidget);
+    expect(find.textContaining('No records yet'), findsOneWidget);
+    expect(find.text('Start Tracking'), findsOneWidget);
+  });
+}

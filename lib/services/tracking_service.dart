@@ -5,12 +5,12 @@ import '../models/log_record.dart';
 import '../models/tracking_session.dart';
 
 /// Core logic: accumulates distance from GPS positions, fires a [LogRecord]
-/// every time cumulative distance crosses a 100 m threshold, computes grade
-/// and Menger curvature.
+/// every time cumulative distance crosses a [kLogIntervalM] threshold (50 m),
+/// computes grade and Menger curvature.
 ///
 /// ── Menger Curvature Algorithm ──────────────────────────────────────
 ///
-/// Given 3 consecutive 100 m nodes P1, P2, P3:
+/// Given 3 consecutive logged nodes P1, P2, P3:
 ///
 ///   Step 1: Convert lat/lon to local XY metres (equirectangular projection).
 ///   Step 2: Triangle area via cross product:
@@ -40,7 +40,7 @@ class TrackingService {
 
   // ── Configuration ─────────────────────────────────────────────────
 
-  static const double kLogIntervalM = 100.0;
+  static const double kLogIntervalM = kLogIntervalMeters;
   static const double kMaxAccuracyM = 20.0;
   static const double kMinMovementM = 5.0;
   static const double kMinSpeedMs = 1.0;
@@ -104,7 +104,7 @@ class TrackingService {
       // ── Accumulate distance ────────────────────────────────────
       session.totalDistanceMeters += dist;
 
-      // ── Check 100 m threshold(s) ───────────────────────────────
+      // ── Check distance threshold(s) ────────────────────────────
       while (session.totalDistanceMeters >= session.nextLogThresholdMeters) {
         session.recordIndex++;
 
@@ -190,7 +190,7 @@ class TrackingService {
       segmentDistanceM: segmentDist,
       elevationDeltaM: elevDelta,
       gradePercent: grade,
-      totalDistanceM: session.nextLogThresholdMeters - kLogIntervalM,
+      totalDistanceM: session.nextLogThresholdMeters,
       curvaturePercent: curvaturePct,
       curveRadiusM: radiusM,
     );

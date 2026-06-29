@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart'
     as perm;
@@ -41,20 +42,65 @@ class LocationService {
   // ── GPS stream ──────────────────────────────────────────────────────
 
   /// Start listening to high-accuracy position updates.
-  /// [distanceFilter] is in metres – 0 gives every update.
+  ///
+  /// Uses platform-specific [LocationSettings] so tracking keeps running while
+  /// the app is in the background:
+  ///   • Android → a foreground service with an ongoing notification + wake lock
+  ///     (otherwise Android suspends location updates once the screen locks).
+  ///   • iOS → `allowBackgroundLocationUpdates` together with the
+  ///     `UIBackgroundModes: location` entry already declared in Info.plist.
+  ///
+  /// [distanceFilter] is in metres – 0 gives every update (we do our own
+  /// distance logic in [TrackingService]).
   void startListening({int distanceFilter = 0}) {
     _subscription?.cancel();
 
-    const settings = LocationSettings(
-      accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter: 0, // we do our own distance logic
-    );
-
     _subscription = Geolocator.getPositionStream(
-      locationSettings: settings,
+      locationSettings: _buildLocationSettings(distanceFilter),
     ).listen(
       (pos) => _controller.add(pos),
       onError: (e) => _controller.addError(e),
+    );
+  }
+
+  /// Builds [LocationSettings] tuned for continuous background tracking on the
+  /// current platform.
+  LocationSettings _buildLocationSettings(int distanceFilter) {
+    const accuracy = LocationAccuracy.bestForNavigation;
+
+    if (Platform.isAndroid) {
+      return AndroidSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+        forceLocationManager: false,
+        // Poll at ~1 Hz.  geolocator's Android default is 5 s, which at train
+        // speed means a single fix can jump well past one 50 m mark and emit
+        // several records at the same coordinate (degenerate curvature/grade).
+        // 1 Hz keeps most fixes under 50 m below ~180 km/h, matching iOS.
+        intervalDuration: const Duration(seconds: 1),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'Train Logger',
+          notificationText: 'Logging train movement…',
+          enableWakeLock: true,
+          setOngoing: true,
+        ),
+      );
+    }
+
+    if (Platform.isIOS || Platform.isMacOS) {
+      return AppleSettings(
+        accuracy: accuracy,
+        activityType: ActivityType.otherNavigation,
+        distanceFilter: distanceFilter,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+        allowBackgroundLocationUpdates: true,
+      );
+    }
+
+    return LocationSettings(
+      accuracy: accuracy,
+      distanceFilter: distanceFilter,
     );
   }
 

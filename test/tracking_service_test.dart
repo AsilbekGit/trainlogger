@@ -1,5 +1,8 @@
 import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:train_logger/models/log_record.dart';
+import 'package:train_logger/models/tracking_session.dart';
 import 'package:train_logger/services/tracking_service.dart';
 
 void main() {
@@ -34,17 +37,19 @@ void main() {
       expect(hasCrossedThreshold(99.9, 100.0), isFalse);
     });
 
-    test('multi-threshold: 250 m jump crosses 100 and 200', () {
+    test('multi-threshold: 50 m + 250 m jump → 300 m crosses 100, 200 and 300',
+        () {
       double totalDistance = 50.0;
       double nextThreshold = 100.0;
       int crossings = 0;
-      totalDistance += 250.0;
+      totalDistance += 250.0; // → 300 m
       while (hasCrossedThreshold(totalDistance, nextThreshold)) {
         crossings++;
         nextThreshold += 100.0;
       }
-      expect(crossings, 2);
-      expect(nextThreshold, 300.0);
+      // 300 m is itself a threshold, so under the `>=` rule it is crossed too.
+      expect(crossings, 3);
+      expect(nextThreshold, 400.0);
     });
   });
 
@@ -223,6 +228,49 @@ void main() {
         41.2995, 69.2401,
       );
       expect(dist, closeTo(0.0, 0.01));
+    });
+  });
+
+  // ── processPosition emission ────────────────────────────────────
+  // Guards the 50 m interval and the totalDistanceM off-by-one fix
+  // (record #1 used to store 0 instead of 50).
+  group('processPosition', () {
+    Position mkPos(double lat, double lon) => Position(
+          longitude: lon,
+          latitude: lat,
+          timestamp: DateTime.now(),
+          accuracy: 5.0,
+          altitude: 100.0,
+          altitudeAccuracy: 1.0,
+          heading: 0.0,
+          headingAccuracy: 1.0,
+          speed: 20.0,
+          speedAccuracy: 1.0,
+        );
+
+    test('logs every 50 m and stores the true milestone distance', () {
+      final session = TrackingSession();
+      final svc = TrackingService(session);
+
+      const startLat = 41.0;
+      const lon = 69.0;
+      const stepDeg = 10.0 / 111320.0; // ~10 m north per fix
+
+      final all = <LogRecord>[];
+      for (var i = 0; i < 25; i++) {
+        all.addAll(svc.processPosition(mkPos(startLat + stepDeg * i, lon)));
+      }
+
+      expect(all, isNotEmpty);
+      // Regression: record #1 must be the 50 m milestone, not 0.
+      expect(all.first.index, 1);
+      expect(all.first.totalDistanceM, 50.0);
+
+      // Milestones are exact multiples of the 50 m interval, in order.
+      for (var i = 0; i < all.length; i++) {
+        expect(all[i].index, i + 1);
+        expect(all[i].totalDistanceM, closeTo(50.0 * (i + 1), 1e-6));
+      }
     });
   });
 }
