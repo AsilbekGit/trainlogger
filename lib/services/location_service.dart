@@ -1,14 +1,25 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart'
-    as perm;
+import 'package:permission_handler/permission_handler.dart' as perm;
 
 /// Wraps platform location APIs.  Exposes a high-accuracy position stream
 /// and permission helpers.
 class LocationService {
   StreamSubscription<Position>? _subscription;
   final _controller = StreamController<Position>.broadcast();
+  final Stream<Position> Function(LocationSettings) _positionStreamFactory;
+  Future<void> _cancellation = Future.value();
+  int _generation = 0;
+  bool _disposed = false;
+
+  LocationService({
+    Stream<Position> Function(LocationSettings)? positionStreamFactory,
+  }) : _positionStreamFactory =
+           positionStreamFactory ??
+           ((settings) =>
+               Geolocator.getPositionStream(locationSettings: settings));
 
   Stream<Position> get positionStream => _controller.stream;
 
@@ -34,9 +45,13 @@ class LocationService {
     return await perm.Permission.locationWhenInUse.status;
   }
 
-  /// Opens iOS Settings so the user can grant permission manually.
+  /// Opens platform location settings (including macOS).
   Future<void> openSettings() async {
-    await perm.openAppSettings();
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      await Geolocator.openLocationSettings();
+    } else {
+      await Geolocator.openAppSettings();
+    }
   }
 
   // ── GPS stream ──────────────────────────────────────────────────────
@@ -52,15 +67,32 @@ class LocationService {
   ///
   /// [distanceFilter] is in metres – 0 gives every update (we do our own
   /// distance logic in [TrackingService]).
-  void startListening({int distanceFilter = 0}) {
-    _subscription?.cancel();
+  Future<void> startListening({int distanceFilter = 0}) async {
+    if (_disposed) throw StateError('Location service has been disposed');
+    final generation = ++_generation;
+    _cancelSubscription();
+    // Do not let an old platform cancellation tear down a newly started stream.
+    await _cancellation;
+    if (_disposed || generation != _generation) return;
 
-    _subscription = Geolocator.getPositionStream(
-      locationSettings: _buildLocationSettings(distanceFilter),
-    ).listen(
-      (pos) => _controller.add(pos),
-      onError: (e) => _controller.addError(e),
-    );
+    _subscription =
+        _positionStreamFactory(_buildLocationSettings(distanceFilter)).listen(
+          (position) {
+            if (!_disposed && generation == _generation) {
+              _controller.add(position);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_disposed && generation == _generation) {
+              _controller.addError(error, stackTrace);
+            }
+          },
+          onDone: () {
+            if (!_disposed && generation == _generation) {
+              _controller.addError(StateError('Location updates ended'));
+            }
+          },
+        );
   }
 
   /// Builds [LocationSettings] tuned for continuous background tracking on the
@@ -73,10 +105,9 @@ class LocationService {
         accuracy: accuracy,
         distanceFilter: distanceFilter,
         forceLocationManager: false,
-        // Poll at ~1 Hz.  geolocator's Android default is 5 s, which at train
-        // speed means a single fix can jump well past one 50 m mark and emit
-        // several records at the same coordinate (degenerate curvature/grade).
-        // 1 Hz keeps most fixes under 50 m below ~180 km/h, matching iOS.
+        // Poll at ~1 Hz for better curve resolution. Milestones are
+        // interpolated between fixes; shorter gaps make those estimates more
+        // accurate than geolocator's five-second Android default.
         intervalDuration: const Duration(seconds: 1),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: 'Train Logger',
@@ -98,18 +129,28 @@ class LocationService {
       );
     }
 
-    return LocationSettings(
-      accuracy: accuracy,
-      distanceFilter: distanceFilter,
-    );
+    return LocationSettings(accuracy: accuracy, distanceFilter: distanceFilter);
   }
 
   void stopListening() {
-    _subscription?.cancel();
+    _generation++;
+    _cancelSubscription();
+  }
+
+  void _cancelSubscription() {
+    final subscription = _subscription;
     _subscription = null;
+    if (subscription == null) return;
+    _cancellation = _cancellation.then((_) => subscription.cancel()).catchError(
+      (Object error, StackTrace stackTrace) {
+        debugPrint('[LocationService] Error stopping GPS: $error');
+      },
+    );
   }
 
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     stopListening();
     _controller.close();
   }

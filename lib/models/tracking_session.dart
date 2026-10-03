@@ -12,6 +12,8 @@ const double kLogIntervalMeters = 50.0;
 class GpsPoint {
   final double lat;
   final double lon;
+
+  /// Median-smoothed altitude for an accepted fix or interpolated log point.
   final double altitude;
   final double speedMs;
   final double accuracy;
@@ -64,6 +66,10 @@ class TrackingSession {
   /// Points accepted for the map polyline (decimated).
   final List<LatLng> polylinePoints = [];
 
+  /// Indices where a new continuous route starts after tracking was paused or
+  /// GPS jumped. The map must not connect these points to the preceding route.
+  final List<int> polylineBreakIndices = [];
+
   /// Current live speed in km/h for the dashboard.
   double currentSpeedKmh = 0.0;
 
@@ -81,6 +87,7 @@ class TrackingSession {
     secondLastLoggedPoint = null;
     altitudeWindow.clear();
     polylinePoints.clear();
+    polylineBreakIndices.clear();
     currentSpeedKmh = 0.0;
     currentAltitude = 0.0;
   }

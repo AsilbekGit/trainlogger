@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/providers.dart';
+import 'tracking_controls.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -15,23 +16,39 @@ class DashboardScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Train Logger'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            tooltip: 'Export CSV',
-            onPressed: records.isEmpty ? null : () => tracker.exportCsv(),
+          Builder(
+            builder: (buttonContext) => IconButton(
+              icon: const Icon(Icons.share),
+              tooltip: 'Export CSV',
+              onPressed: records.isEmpty
+                  ? null
+                  : () {
+                      final box = buttonContext.findRenderObject() as RenderBox;
+                      tracker.exportCsv(
+                        sharePositionOrigin:
+                            box.localToGlobal(Offset.zero) & box.size,
+                      );
+                    },
+            ),
           ),
           PopupMenuButton<String>(
             onSelected: (v) {
               if (v == 'new') _confirmNewSession(context, tracker);
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(value: 'new', child: Text('New Session')),
+              PopupMenuItem(
+                value: 'new',
+                enabled: !tracker.isClearing,
+                child: const Text('New Session'),
+              ),
             ],
           ),
         ],
       ),
       body: Column(
         children: [
+          if (tracker.errorMessage != null)
+            TrackingErrorBanner(message: tracker.errorMessage!),
           _StatsPanel(
             speedKmh: tracker.speedKmh,
             totalDistance: tracker.totalDistanceM,
@@ -45,12 +62,23 @@ class DashboardScreen extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
             child: FilledButton.icon(
-              onPressed: () => _toggleTracking(context, ref),
+              onPressed: tracker.isBusy
+                  ? null
+                  : () => toggleTracking(context, tracker),
               icon: Icon(isTracking ? Icons.stop : Icons.play_arrow),
-              label: Text(isTracking ? 'Stop Tracking' : 'Start Tracking'),
+              label: Text(
+                tracker.isStarting
+                    ? 'Starting…'
+                    : tracker.isClearing
+                    ? 'Clearing…'
+                    : isTracking
+                    ? 'Stop Tracking'
+                    : 'Start Tracking',
+              ),
               style: FilledButton.styleFrom(
-                backgroundColor:
-                    isTracking ? Colors.red : Colors.green.shade700,
+                backgroundColor: isTracking
+                    ? Colors.red
+                    : Colors.green.shade700,
                 minimumSize: const Size(220, 48),
               ),
             ),
@@ -89,7 +117,9 @@ class DashboardScreen extends ConsumerWidget {
                           child: Text(
                             '${r.index}',
                             style: const TextStyle(
-                                color: Colors.white, fontSize: 13),
+                              color: Colors.white,
+                              fontSize: 13,
+                            ),
                           ),
                         ),
                         title: Text(
@@ -101,9 +131,11 @@ class DashboardScreen extends ConsumerWidget {
                           'Curve: $curveStr',
                         ),
                         trailing: Text(
-                          r.timestamp.substring(11, 19),
+                          _formatTimestamp(r.timestamp),
                           style: const TextStyle(
-                              fontSize: 12, color: Colors.grey),
+                            fontSize: 12,
+                            color: Colors.grey,
+                          ),
                         ),
                       );
                     },
@@ -114,41 +146,12 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _toggleTracking(BuildContext context, WidgetRef ref) async {
-    final tracker = ref.read(trackingProvider);
-    if (tracker.isTracking) {
-      tracker.stopTracking();
-    } else {
-      final ok = await tracker.startTracking();
-      if (!ok && context.mounted) {
-        _showPermissionDialog(context, tracker);
-      }
-    }
-  }
-
-  void _showPermissionDialog(BuildContext context, TrackingNotifier tracker) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Location Permission Required'),
-        content: const Text(
-          'Please enable location access in Settings to use the tracker.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              tracker.openSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
+  String _formatTimestamp(String timestamp) {
+    final time = DateTime.tryParse(timestamp)?.toLocal();
+    if (time == null) return '—';
+    return '${time.hour.toString().padLeft(2, '0')}:'
+        '${time.minute.toString().padLeft(2, '0')}:'
+        '${time.second.toString().padLeft(2, '0')}';
   }
 
   void _confirmNewSession(BuildContext context, TrackingNotifier tracker) {
@@ -170,7 +173,7 @@ class DashboardScreen extends ConsumerWidget {
               Navigator.pop(context);
               tracker.newSession();
             },
-            child: const Text('Clear & Start New'),
+            child: const Text('Clear Session'),
           ),
         ],
       ),
@@ -202,37 +205,41 @@ class _StatsPanel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       color: isTracking
-          ? Colors.green.withOpacity(0.08)
-          : Colors.grey.withOpacity(0.06),
+          ? Colors.green.withValues(alpha: 0.08)
+          : Colors.grey.withValues(alpha: 0.06),
       child: Column(
         children: [
           Text(
             '${speedKmh.toStringAsFixed(1)} km/h',
-            style: Theme.of(context)
-                .textTheme
-                .displaySmall
-                ?.copyWith(fontWeight: FontWeight.bold),
+            style: Theme.of(
+              context,
+            ).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 4),
           // ── Elapsed time ──────────────────────────────────
           Text(
             _formatDuration(elapsed),
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: isTracking ? Colors.green.shade700 : Colors.grey,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
+              color: isTracking ? Colors.green.shade700 : Colors.grey,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
           ),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _StatChip(
-                  label: 'Distance', value: _formatDistance(totalDistance)),
+                label: 'Distance',
+                value: _formatDistance(totalDistance),
+              ),
               _StatChip(
-                  label: 'Next Log', value: _formatDistance(nextThreshold)),
+                label: 'Next Log',
+                value: _formatDistance(nextThreshold),
+              ),
               _StatChip(
-                  label: 'Altitude',
-                  value: '${altitude.toStringAsFixed(1)} m'),
+                label: 'Altitude',
+                value: '${altitude.toStringAsFixed(1)} m',
+              ),
               _StatChip(label: 'Records', value: '$recordCount'),
             ],
           ),
@@ -264,11 +271,12 @@ class _StatChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(value,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+        Text(
+          value,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+        ),
         const SizedBox(height: 2),
-        Text(label,
-            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
       ],
     );
   }

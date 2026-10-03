@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Rect;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
@@ -14,158 +15,303 @@ import '../services/export_service.dart';
 
 final locationServiceProvider = Provider<LocationService>((ref) {
   final svc = LocationService();
-  ref.onDispose(() => svc.dispose());
+  ref.onDispose(svc.dispose);
   return svc;
 });
 
 final storageServiceProvider = Provider<StorageService>((ref) {
   // Must be overridden in main() with an initialised StorageService.
-  // Throwing (instead of returning an un-initialised instance) makes a missing
-  // override fail loudly in tests / alternate entrypoints instead of silently
-  // not persisting.
   throw UnimplementedError(
     'storageServiceProvider must be overridden in main()',
   );
 });
 
-// ── Tracking Notifier ───────────────────────────────────────────────
-
-/// Central controller that manages the tracking session, pipes GPS into
-/// [TrackingService], and notifies listeners on every state change.
+/// Central controller for GPS, session state, persistence and UI updates.
 class TrackingNotifier extends ChangeNotifier {
   final LocationService _locationSvc;
   final StorageService _storageSvc;
+  final DateTime Function() _now;
 
   final TrackingSession session = TrackingSession();
   late final TrackingService _trackingSvc;
 
   StreamSubscription<Position>? _gpsSub;
   Timer? _elapsedTimer;
+  Future<bool>? _startFuture;
+  Future<void>? _clearFuture;
+  bool _disposed = false;
+  int _operationId = 0;
+  int _sessionRevision = 0;
+  Duration _completedElapsed = Duration.zero;
+  DateTime? _activeSince;
   List<LogRecord> _records = [];
   LatLng? currentLatLng;
+  String? errorMessage;
+  bool needsLocationPermission = false;
+  bool isStarting = false;
+  bool isClearing = false;
 
-  TrackingNotifier(this._locationSvc, this._storageSvc) {
+  TrackingNotifier(
+    this._locationSvc,
+    this._storageSvc, {
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now {
     _trackingSvc = TrackingService(session);
-
-    // Load previously persisted records (safe — returns [] on error).
     try {
       _records = _storageSvc.getAll();
-      // Restore session counters if resuming.  Note: only the last clean
-      // milestone is restored — the sub-interval remainder (up to one fix of
-      // real distance) is lost, and because the GPS history points aren't
-      // persisted the first record after a resume has null curvature.
+      // Only completed milestones are persisted. GPS history and active time
+      // start afresh after relaunch; never infer movement across that gap.
       if (_records.isNotEmpty) {
         session.recordIndex = _records.last.index;
         session.totalDistanceMeters = _records.last.totalDistanceM;
         session.nextLogThresholdMeters =
             session.totalDistanceMeters + TrackingService.kLogIntervalM;
       }
-    } catch (e) {
-      debugPrint('[TrackingNotifier] Error loading records: $e');
-      _records = [];
+      if (_storageSvc.lastError != null) {
+        debugPrint('[TrackingNotifier] Load warning: ${_storageSvc.lastError}');
+        errorMessage = _records.isEmpty
+            ? 'Saved records could not be fully loaded. Existing files were preserved.'
+            : 'Some saved records could not be read. Recovered records are '
+                  'available; export them before starting a new session.';
+      }
+    } catch (error) {
+      debugPrint('[TrackingNotifier] Load error: $error');
+      errorMessage =
+          'Saved records could not be loaded. Existing files were preserved.';
     }
   }
 
   List<LogRecord> get records => List.unmodifiable(_records);
   bool get isTracking => session.isTracking;
+  bool get isBusy => isStarting || isClearing;
   double get speedKmh => session.currentSpeedKmh;
   double get totalDistanceM => session.totalDistanceMeters;
   double get nextThresholdM => session.nextLogThresholdMeters;
   double get altitudeM => session.currentAltitude;
-  List<LatLng> get polyline => session.polylinePoints;
+  List<LatLng> get polyline => List.unmodifiable(session.polylinePoints);
 
-  /// Elapsed duration since tracking started.  Returns [Duration.zero] when
-  /// not tracking or before the first session start.
+  /// Disconnected routes after stops or GPS loss, without invented connectors.
+  List<List<LatLng>> get routeSegments {
+    final points = session.polylinePoints;
+    final segments = <List<LatLng>>[];
+    var start = 0;
+    for (final end in session.polylineBreakIndices) {
+      if (end > start && end <= points.length) {
+        segments.add(List.unmodifiable(points.sublist(start, end)));
+        start = end;
+      }
+    }
+    if (start < points.length) {
+      segments.add(List.unmodifiable(points.sublist(start)));
+    }
+    return List.unmodifiable(segments);
+  }
+
+  /// Active tracking time, frozen while stopped and resumed on the next start.
   Duration get elapsed {
-    if (session.startTime == null) return Duration.zero;
-    return DateTime.now().difference(session.startTime!);
+    final activeSince = _activeSince;
+    if (activeSince == null) return _completedElapsed;
+    final active = _now().difference(activeSince);
+    return _completedElapsed + (active.isNegative ? Duration.zero : active);
   }
 
   // ── Start / Stop ──────────────────────────────────────────────
 
-  Future<bool> startTracking() async {
-    final ok = await _locationSvc.requestPermission();
-    if (!ok) return false;
+  Future<bool> startTracking() {
+    if (_disposed || isClearing) return Future.value(false);
+    // Both tabs share this controller. Repeated taps must not request multiple
+    // permissions or leave duplicate subscriptions processing every GPS fix.
+    final pending = _startFuture;
+    if (pending != null) return pending;
+    if (isTracking) return Future.value(true);
+    final result = Completer<bool>();
+    _startFuture = result.future;
+    unawaited(_startTracking(++_operationId).then(result.complete));
+    return result.future;
+  }
 
-    _locationSvc.startListening();
-    _gpsSub = _locationSvc.positionStream.listen(
-      _onPosition,
-      onError: _onPositionError,
-    );
-    session.isTracking = true;
-    session.startTime ??= DateTime.now();
-
-    // Tick every second so the elapsed-time UI stays up to date.
-    _elapsedTimer?.cancel();
-    _elapsedTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => notifyListeners(),
-    );
-
+  Future<bool> _startTracking(int operation) async {
+    isStarting = true;
+    needsLocationPermission = false;
+    errorMessage = null;
     notifyListeners();
-    return true;
+    try {
+      final permitted = await _locationSvc.requestPermission();
+      if (_disposed || operation != _operationId) return false;
+      if (!permitted) {
+        needsLocationPermission = true;
+        return false;
+      }
+
+      session.isTracking = true;
+      _activeSince = _now();
+      session.startTime ??= _activeSince;
+      _gpsSub = _locationSvc.positionStream.listen(
+        _onPosition,
+        onError: _onPositionError,
+        onDone: _onPositionDone,
+      );
+      // Subscribe first so a position/error emitted during start is not lost.
+      await _locationSvc.startListening();
+      if (_disposed || !isTracking || operation != _operationId) return false;
+      _elapsedTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => notifyListeners(),
+      );
+      return true;
+    } catch (error) {
+      if (!_disposed && operation == _operationId) {
+        debugPrint('[TrackingNotifier] GPS start error: $error');
+        errorMessage =
+            'Unable to start location tracking. '
+            'Check location access and try again.';
+        stopTracking();
+      }
+      return false;
+    } finally {
+      _startFuture = null;
+      isStarting = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   void stopTracking() {
+    if (_disposed) return;
+    // Invalidate any permission request that is still awaiting the OS dialog.
+    _operationId++;
+    _completedElapsed = elapsed;
+    _activeSince = null;
+    session.isTracking = false;
     _gpsSub?.cancel();
     _gpsSub = null;
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
     _locationSvc.stopListening();
-    session.isTracking = false;
+    // Movement while stopped must not become distance/grade on resume.
+    _trackingSvc.resetPositionHistory();
     notifyListeners();
   }
-
-  // ── Process each GPS fix ──────────────────────────────────────
 
   void _onPosition(Position pos) {
-    currentLatLng = LatLng(pos.latitude, pos.longitude);
-
+    if (_disposed || !isTracking) return;
     final newRecords = _trackingSvc.processPosition(pos);
+    // Use the validated fix, not a rejected GPS outlier, for the map marker.
+    currentLatLng = _trackingSvc.currentPoint?.latLng ?? currentLatLng;
     if (newRecords.isNotEmpty) {
       _records.addAll(newRecords);
-      _storageSvc.addAll(newRecords);
+      unawaited(_saveRecords(newRecords, _sessionRevision));
     }
-
     notifyListeners();
   }
 
-  /// Handle errors from the GPS stream (location services disabled mid-trip,
-  /// permission revoked, …).  Previously these were unhandled and silently
-  /// swallowed by the zone while the UI kept showing "tracking".  We log and
-  /// stop so the UI reflects reality and the user can restart.
-  void _onPositionError(Object error, StackTrace _) {
-    debugPrint('[TrackingNotifier] GPS stream error: $error');
+  Future<void> _saveRecords(List<LogRecord> records, int revision) async {
+    try {
+      await _storageSvc.addAll(records);
+    } catch (error) {
+      if (_disposed || revision != _sessionRevision) return;
+      debugPrint('[TrackingNotifier] Save error: $error');
+      errorMessage =
+          'Records could not be saved. Tracking has stopped; '
+          'export your records before closing the app.';
+      stopTracking();
+    }
+  }
+
+  void _onPositionError(Object error, StackTrace stackTrace) {
+    if (_disposed || !isTracking) return;
+    debugPrint('[TrackingNotifier] GPS error: $error');
+    errorMessage =
+        'Location updates stopped. '
+        'Check location access and start tracking again.';
+    stopTracking();
+  }
+
+  void _onPositionDone() {
+    if (_disposed || !isTracking) return;
+    errorMessage = 'Location updates ended. Start tracking to reconnect.';
     stopTracking();
   }
 
   // ── Session management ────────────────────────────────────────
 
-  Future<void> newSession() async {
+  Future<void> newSession() {
+    if (_disposed) return Future.value();
+    final pending = _clearFuture;
+    if (pending != null) return pending;
+    final result = Completer<void>();
+    _clearFuture = result.future;
+    unawaited(_newSession().then(result.complete));
+    return result.future;
+  }
+
+  Future<void> _newSession() async {
+    isClearing = true;
     stopTracking();
-    session.reset();
-    _records.clear();
-    await _storageSvc.clearAll();
-    currentLatLng = null;
-    notifyListeners();
+    try {
+      // Preserve the current session and exportable records if deletion fails.
+      // Starting is disabled until the queued disk operation has completed.
+      await _storageSvc.clearAll();
+      if (_disposed) return;
+      _sessionRevision++;
+      session.reset();
+      _trackingSvc.resetPositionHistory();
+      _records.clear();
+      _completedElapsed = Duration.zero;
+      currentLatLng = null;
+      errorMessage = null;
+      needsLocationPermission = false;
+    } catch (error) {
+      debugPrint('[TrackingNotifier] Clear error: $error');
+      if (!_disposed) {
+        errorMessage =
+            'Could not clear the session. Your current records were kept.';
+      }
+    } finally {
+      _clearFuture = null;
+      isClearing = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
-  Future<void> exportCsv() async {
-    await ExportService.exportAndShare(_records);
+  Future<void> exportCsv({Rect? sharePositionOrigin}) async {
+    try {
+      await ExportService.exportAndShare(
+        records,
+        sharePositionOrigin: sharePositionOrigin,
+      );
+    } catch (error) {
+      if (_disposed) return;
+      debugPrint('[TrackingNotifier] Export error: $error');
+      errorMessage = 'Could not export records. Please try again.';
+      notifyListeners();
+    }
   }
 
-  /// Open device Settings so the user can grant location permission.
-  Future<void> openSettings() => _locationSvc.openSettings();
+  Future<void> openSettings() async {
+    try {
+      await _locationSvc.openSettings();
+    } catch (error) {
+      if (_disposed) return;
+      debugPrint('[TrackingNotifier] Settings error: $error');
+      errorMessage =
+          'Could not open Settings. '
+          'Open device Settings to check location access.';
+      notifyListeners();
+    }
+  }
 
   @override
   void dispose() {
+    _operationId++;
+    _disposed = true;
     _elapsedTimer?.cancel();
+    _gpsSub?.cancel();
+    _locationSvc.stopListening();
     super.dispose();
   }
 }
 
-final trackingProvider =
-    ChangeNotifierProvider<TrackingNotifier>((ref) {
+final trackingProvider = ChangeNotifierProvider<TrackingNotifier>((ref) {
   final loc = ref.watch(locationServiceProvider);
   final store = ref.watch(storageServiceProvider);
   return TrackingNotifier(loc, store);

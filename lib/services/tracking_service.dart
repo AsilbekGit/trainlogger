@@ -29,14 +29,32 @@ import '../models/tracking_session.dart';
 ///
 /// ── Noise filtering strategy ────────────────────────────────────────
 ///
-/// 1. Reject points with horizontal accuracy worse than [kMaxAccuracyM].
-/// 2. Reject points where GPS-reported speed ≤ 0 or unavailable (-1 on iOS).
+/// 1. Reject invalid/stale fixes and accuracy worse than [kMaxAccuracyM].
+/// 2. Ignore distance below [kMinSpeedMs] or with unavailable speed (-1 on iOS).
 /// 3. Reject point-to-point jumps smaller than [kMinMovementM].
 /// 4. Reject point-to-point jumps larger than [kMaxJumpM].
 /// 5. Cap instantaneous speed at [kMaxSpeedMs].
 class TrackingService {
   final TrackingSession session;
   TrackingService(this.session);
+
+  GpsPoint? _currentPoint;
+
+  /// Latest valid fix for the map, including stationary and sub-5 m updates.
+  /// Rejected fixes never replace it.
+  GpsPoint? get currentPoint => _currentPoint;
+
+  /// Start a new continuous stretch without losing recorded distance.
+  /// Call when GPS tracking stops so a restart does not count unobserved travel
+  /// or calculate grade/curvature across the gap.
+  void resetPositionHistory() {
+    session.previousPoint = null;
+    session.lastLoggedPoint = null;
+    session.secondLastLoggedPoint = null;
+    session.altitudeWindow.clear();
+    session.currentSpeedKmh = 0.0;
+    _currentPoint = null;
+  }
 
   // ── Configuration ─────────────────────────────────────────────────
 
@@ -52,76 +70,85 @@ class TrackingService {
   // ── Public entry point ────────────────────────────────────────────
 
   List<LogRecord> processPosition(Position pos) {
-    // ── FILTER 1: Reject poor horizontal accuracy. ───────────────
-    if (pos.accuracy > kMaxAccuracyM) {
+    // Validate before changing counters, smoothing, or constructing a LatLng.
+    if (!pos.latitude.isFinite ||
+        pos.latitude.abs() > 90.0 ||
+        !pos.longitude.isFinite ||
+        pos.longitude.abs() > 180.0 ||
+        !pos.altitude.isFinite ||
+        !pos.accuracy.isFinite ||
+        pos.accuracy < 0.0 ||
+        pos.accuracy > kMaxAccuracyM ||
+        !pos.speed.isFinite) {
+      return [];
+    }
+    final latest = _currentPoint ?? session.previousPoint;
+    if (latest != null && !pos.timestamp.isAfter(latest.time)) {
       return [];
     }
 
-    // ── FILTER 2: Handle iOS speed = -1 (unavailable). ──────────
-    final rawSpeed = pos.speed;
-    final speedMs = (rawSpeed > 0) ? rawSpeed.clamp(0.0, kMaxSpeedMs) : 0.0;
+    // Preserve the existing noise policy: unavailable speed (-1 on iOS) and
+    // speeds below 1 m/s update the dashboard but do not accumulate distance.
+    final speedMs = pos.speed.clamp(0.0, kMaxSpeedMs).toDouble();
+    final previous = session.previousPoint;
+    final dist = previous == null
+        ? 0.0
+        : _geodesicDistance(
+            previous.lat,
+            previous.lon,
+            pos.latitude,
+            pos.longitude,
+          );
 
-    if (speedMs < kMinSpeedMs) {
-      session.currentSpeedKmh = 0.0;
-      _pushAltitude(pos.altitude);
-      session.currentAltitude = _smoothedAltitude();
+    if (previous != null && dist > kMaxJumpM) {
+      // A rejected jump must not become the origin for the next measurement.
+      // Reacquire a baseline on the next fix and discard cross-gap geometry.
+      resetPositionHistory();
       return [];
     }
 
+    _pushAltitude(pos.altitude);
+    final altitude = _smoothedAltitude();
     final point = GpsPoint(
       lat: pos.latitude,
       lon: pos.longitude,
-      altitude: pos.altitude,
+      altitude: altitude,
       speedMs: speedMs,
       accuracy: pos.accuracy,
       time: pos.timestamp,
     );
+    _currentPoint = point;
+    session.currentAltitude = altitude;
+    session.currentSpeedKmh = speedMs < kMinSpeedMs ? 0.0 : speedMs * 3.6;
 
-    session.currentSpeedKmh = speedMs * 3.6;
-    _pushAltitude(pos.altitude);
-    session.currentAltitude = _smoothedAltitude();
+    if (speedMs < kMinSpeedMs) return [];
 
-    // ── FILTER 3 & 4: Min movement + teleport rejection. ────────
     final records = <LogRecord>[];
+    if (previous != null) {
+      if (dist < kMinMovementM) return [];
 
-    if (session.previousPoint != null) {
-      final dist = _geodesicDistance(
-        session.previousPoint!.lat,
-        session.previousPoint!.lon,
-        point.lat,
-        point.lon,
-      );
-
-      if (dist > kMaxJumpM) {
-        session.previousPoint = point;
-        return [];
-      }
-
-      if (dist < kMinMovementM) {
-        return [];
-      }
-
-      // ── Accumulate distance ────────────────────────────────────
+      final distanceBeforeFix = session.totalDistanceMeters;
       session.totalDistanceMeters += dist;
 
-      // ── Check distance threshold(s) ────────────────────────────
       while (session.totalDistanceMeters >= session.nextLogThresholdMeters) {
+        // A single GPS fix can cross several 50 m marks. Estimate each mark
+        // along the accepted segment instead of duplicating its endpoint.
+        final fraction =
+            (session.nextLogThresholdMeters - distanceBeforeFix) / dist;
+        final loggedPoint = _interpolate(previous, point, fraction);
         session.recordIndex++;
-
-        final record = _buildRecord(point);
-        records.add(record);
-
-        // Shift the logged-point history for curvature:
-        //   secondLast ← last,  last ← current
+        records.add(_buildRecord(loggedPoint));
         session.secondLastLoggedPoint = session.lastLoggedPoint;
-        session.lastLoggedPoint = point;
-
+        session.lastLoggedPoint = loggedPoint;
         session.nextLogThresholdMeters += kLogIntervalM;
       }
 
       _maybeAppendPolyline(point);
     } else {
       session.lastLoggedPoint = point;
+      if (session.polylinePoints.isNotEmpty) {
+        session.polylineBreakIndices.add(session.polylinePoints.length);
+      }
       session.polylinePoints.add(point.latLng);
     }
 
@@ -131,9 +158,24 @@ class TrackingService {
 
   // ── Private helpers ───────────────────────────────────────────────
 
-  LogRecord _buildRecord(GpsPoint current) {
-    final smoothAlt = _smoothedAltitude();
+  GpsPoint _interpolate(GpsPoint start, GpsPoint end, double fraction) {
+    final t = fraction.clamp(0.0, 1.0).toDouble();
+    double lerp(double a, double b) => a + (b - a) * t;
+    final longitude = _wrappedLongitude(
+      start.lon + _wrappedLongitude(end.lon - start.lon) * t,
+    );
+    final elapsedUs = end.time.difference(start.time).inMicroseconds;
+    return GpsPoint(
+      lat: lerp(start.lat, end.lat),
+      lon: longitude,
+      altitude: lerp(start.altitude, end.altitude),
+      speedMs: lerp(start.speedMs, end.speedMs),
+      accuracy: lerp(start.accuracy, end.accuracy),
+      time: start.time.add(Duration(microseconds: (elapsedUs * t).round())),
+    );
+  }
 
+  LogRecord _buildRecord(GpsPoint current) {
     double? elevDelta;
     double? grade;
     double segmentDist = kLogIntervalM;
@@ -148,7 +190,7 @@ class TrackingService {
 
       final prevAlt = session.lastLoggedPoint!.altitude;
       if (segmentDist > 1.0) {
-        elevDelta = smoothAlt - prevAlt;
+        elevDelta = current.altitude - prevAlt;
         grade = (elevDelta / segmentDist) * 100.0;
       }
     }
@@ -186,7 +228,7 @@ class TrackingService {
       latitude: current.lat,
       longitude: current.lon,
       speedKmh: current.speedMs * 3.6,
-      altitudeM: smoothAlt,
+      altitudeM: current.altitude,
       segmentDistanceM: segmentDist,
       elevationDeltaM: elevDelta,
       gradePercent: grade,
@@ -199,8 +241,13 @@ class TrackingService {
   // ── Geodesic distance ─────────────────────────────────────────
 
   static double geodesicDistance(
-      double lat1, double lon1, double lat2, double lon2) {
-    const distance = ll.Distance();
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    // Keep sub-metre precision; rounding every GPS segment biases the total.
+    const distance = ll.Distance(roundResult: false);
     return distance.as(
       ll.LengthUnit.Meter,
       ll.LatLng(lat1, lon1),
@@ -209,8 +256,11 @@ class TrackingService {
   }
 
   double _geodesicDistance(
-          double lat1, double lon1, double lat2, double lon2) =>
-      geodesicDistance(lat1, lon1, lat2, lon2);
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) => geodesicDistance(lat1, lon1, lat2, lon2);
 
   // ── Altitude smoothing ────────────────────────────────────────
 
@@ -238,7 +288,11 @@ class TrackingService {
     }
     final last = session.polylinePoints.last;
     final dist = _geodesicDistance(
-        last.latitude, last.longitude, point.lat, point.lon);
+      last.latitude,
+      last.longitude,
+      point.lat,
+      point.lon,
+    );
     if (dist >= kPolylineDecimationM) {
       session.polylinePoints.add(point.latLng);
     }
@@ -310,9 +364,12 @@ class CurvatureResult {
 ///
 /// Returns [CurvatureResult] with curvature, percent, radius, and area.
 CurvatureResult computeMengerCurvature(
-  double lat1, double lon1,
-  double lat2, double lon2,
-  double lat3, double lon3,
+  double lat1,
+  double lon1,
+  double lat2,
+  double lon2,
+  double lat3,
+  double lon3,
 ) {
   // ── Step 1: Convert to local XY metres ─────────────────────────
   // Equirectangular projection centred on P1.
@@ -322,11 +379,11 @@ CurvatureResult computeMengerCurvature(
   final double midLat = (lat1 + lat2 + lat3) / 3.0;
   final double mPerDegLon = 111320.0 * cos(midLat * pi / 180.0);
 
-  final double x1 = 0.0;
-  final double y1 = 0.0;
-  final double x2 = (lon2 - lon1) * mPerDegLon;
+  const double x1 = 0.0;
+  const double y1 = 0.0;
+  final double x2 = _wrappedLongitude(lon2 - lon1) * mPerDegLon;
   final double y2 = (lat2 - lat1) * mPerDegLat;
-  final double x3 = (lon3 - lon1) * mPerDegLon;
+  final double x3 = _wrappedLongitude(lon3 - lon1) * mPerDegLon;
   final double y3 = (lat3 - lat1) * mPerDegLat;
 
   // ── Step 2: Triangle area via cross product ────────────────────
@@ -373,3 +430,7 @@ double _dist(double x1, double y1, double x2, double y2) {
   final dy = y2 - y1;
   return sqrt(dx * dx + dy * dy);
 }
+
+/// Shortest signed longitude displacement, also normalises interpolated fixes.
+/// Nearby points on opposite sides of the date line remain nearby in XY.
+double _wrappedLongitude(double degrees) => (degrees + 180.0) % 360.0 - 180.0;

@@ -8,15 +8,14 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialise JSON file storage.
-  // This never crashes — worst case it starts with empty data.
+  // Initialization failures are shown by the tracking UI; existing files are
+  // preserved so an unreadable trip is never silently overwritten.
   final storage = StorageService();
   await storage.init();
 
   runApp(
     ProviderScope(
-      overrides: [
-        storageServiceProvider.overrideWithValue(storage),
-      ],
+      overrides: [storageServiceProvider.overrideWithValue(storage)],
       child: const TrainLoggerApp(),
     ),
   );

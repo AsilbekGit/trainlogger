@@ -26,6 +26,8 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSLocationUsageDescription</key>
+	<string>This app needs your location to track train movement, speed, and route.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

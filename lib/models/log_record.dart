@@ -36,7 +36,9 @@ class LogRecord {
   ///   • 0.5 % = moderate curve (R ≈ 200 m)
   ///   • 1.0 % = sharp curve (R ≈ 100 m)
   ///
-  /// Null for the first two records (fewer than 3 points available).
+  /// Null until three points are available. The initial accepted GPS fix
+  /// acts as the origin, so the second record can already have curvature.
+  /// History is restarted after a pause or a rejected GPS jump.
   final double? curvaturePercent;
 
   /// Radius of the circumscribed circle in metres (1/κ).
