@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:train_logger/models/station_event.dart';
 import 'package:train_logger/services/location_service.dart';
 import 'package:train_logger/services/providers.dart';
 import 'package:train_logger/services/storage_service.dart';
@@ -20,6 +21,9 @@ class _TestLocation extends LocationService {
   }
 
   @override
+  Future<bool> hasPreciseLocation() async => true;
+
+  @override
   Stream<Position> get positionStream => positions.stream;
 
   @override
@@ -33,6 +37,11 @@ class _TestLocation extends LocationService {
     positions.close();
     super.dispose();
   }
+}
+
+class _NoDiskStorage extends StorageService {
+  @override
+  Future<void> saveStation(StationEvent station) async {}
 }
 
 void main() {
@@ -107,6 +116,68 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Location updates stopped'), findsOneWidget);
     expect(find.text('Start Tracking'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    location.dispose();
+  });
+
+  testWidgets('Mark Station works only while tracking', (tester) async {
+    final location = _TestLocation();
+    location.permission.complete(true);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          storageServiceProvider.overrideWithValue(_NoDiskStorage()),
+          locationServiceProvider.overrideWithValue(location),
+        ],
+        child: const MaterialApp(home: DashboardScreen()),
+      ),
+    );
+    OutlinedButton markButton() => tester.widget<OutlinedButton>(
+      find.ancestor(
+        of: find.text('Mark Station'),
+        matching: find.byWidgetPredicate((widget) => widget is OutlinedButton),
+      ),
+    );
+    expect(markButton().onPressed, isNull);
+
+    await tester.tap(find.text('Start Tracking'));
+    await tester.pump();
+    expect(markButton().onPressed, isNotNull);
+    await tester.tap(find.text('Mark Station'));
+    await tester.pump();
+    expect(
+      find.text('Waiting for GPS. No position to mark yet.'),
+      findsOneWidget,
+    );
+    expect(find.text('Waiting for GPS…'), findsOneWidget);
+
+    location.positions.add(
+      Position(
+        latitude: 41,
+        longitude: 69,
+        timestamp: DateTime.utc(2026),
+        accuracy: 5,
+        altitude: 100,
+        altitudeAccuracy: 5,
+        heading: 0,
+        headingAccuracy: 0,
+        speed: 10,
+        speedAccuracy: 1,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('Mark Station'));
+    await tester.pump();
+    expect(find.text('Station 1 marked at 0 m.'), findsOneWidget);
+
+    await tester.tap(find.text('Stations (1)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.textContaining('Marked station'), findsOneWidget);
+
+    await tester.tap(find.text('Stop Tracking'));
+    await tester.pump();
+    expect(markButton().onPressed, isNull);
     await tester.pumpWidget(const SizedBox());
     location.dispose();
   });

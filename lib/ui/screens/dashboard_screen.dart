@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/providers.dart';
+import 'station_list.dart';
 import 'tracking_controls.dart';
 
 class DashboardScreen extends ConsumerWidget {
@@ -10,6 +11,8 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tracker = ref.watch(trackingProvider);
     final records = tracker.records;
+    final stations = tracker.stations;
+    final currentStop = tracker.currentStop;
     final isTracking = tracker.isTracking;
 
     return Scaffold(
@@ -20,7 +23,7 @@ class DashboardScreen extends ConsumerWidget {
             builder: (buttonContext) => IconButton(
               icon: const Icon(Icons.share),
               tooltip: 'Export CSV',
-              onPressed: records.isEmpty
+              onPressed: records.isEmpty && stations.isEmpty
                   ? null
                   : () {
                       final box = buttonContext.findRenderObject() as RenderBox;
@@ -45,113 +48,188 @@ class DashboardScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          if (tracker.errorMessage != null)
-            TrackingErrorBanner(message: tracker.errorMessage!),
-          _StatsPanel(
-            speedKmh: tracker.speedKmh,
-            totalDistance: tracker.totalDistanceM,
-            nextThreshold: tracker.nextThresholdM,
-            altitude: tracker.altitudeM,
-            recordCount: records.length,
-            isTracking: isTracking,
-            elapsed: tracker.elapsed,
-          ),
-          const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: FilledButton.icon(
-              onPressed: tracker.isBusy
-                  ? null
-                  : () => toggleTracking(context, tracker),
-              icon: Icon(isTracking ? Icons.stop : Icons.play_arrow),
-              label: Text(
-                tracker.isStarting
-                    ? 'Starting…'
-                    : tracker.isClearing
-                    ? 'Clearing…'
-                    : isTracking
-                    ? 'Stop Tracking'
-                    : 'Start Tracking',
-              ),
-              style: FilledButton.styleFrom(
-                backgroundColor: isTracking
-                    ? Colors.red
-                    : Colors.green.shade700,
-                minimumSize: const Size(220, 48),
-              ),
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: records.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No records yet.\nStart tracking and travel 50 m.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  )
-                : ListView.builder(
-                    reverse: true,
-                    itemCount: records.length,
-                    itemBuilder: (ctx, i) {
-                      final r = records[records.length - 1 - i];
-
-                      // Curvature display: percent + radius.
-                      String curveStr;
-                      if (r.curvaturePercent == null) {
-                        curveStr = '—';
-                      } else {
-                        final pct = r.curvaturePercent!;
-                        final radiusStr = r.curveRadiusM != null
-                            ? 'R=${r.curveRadiusM!.toInt()}m'
-                            : 'R=∞';
-                        curveStr = '${pct.toStringAsFixed(3)}% ($radiusStr)';
-                      }
-
-                      return ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.blueGrey,
-                          child: Text(
-                            '${r.index}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
+      body: DefaultTabController(
+        length: 2,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final header = SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (tracker.errorMessage != null)
+                    TrackingErrorBanner(message: tracker.errorMessage!),
+                  _StatsPanel(
+                    speedKmh: tracker.isGpsStale ? null : tracker.speedKmh,
+                    gpsStatus: gpsStatusText(tracker),
+                    totalDistance: tracker.totalDistanceM,
+                    nextThreshold: tracker.nextThresholdM,
+                    altitude: tracker.altitudeM,
+                    recordCount: records.length,
+                    isTracking: isTracking,
+                    elapsed: tracker.elapsed,
+                    stoppedSince: currentStop?.timestamp,
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: tracker.isBusy
+                                ? null
+                                : () => toggleTracking(context, tracker),
+                            icon: Icon(
+                              isTracking ? Icons.stop : Icons.play_arrow,
+                            ),
+                            label: Text(
+                              tracker.isStarting
+                                  ? 'Starting…'
+                                  : tracker.isClearing
+                                  ? 'Clearing…'
+                                  : isTracking
+                                  ? 'Stop Tracking'
+                                  : 'Start Tracking',
+                            ),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: isTracking
+                                  ? Colors.red
+                                  : Colors.green.shade700,
+                              minimumSize: const Size.fromHeight(48),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
                             ),
                           ),
                         ),
-                        title: Text(
-                          '${r.totalDistanceM.toInt()} m  •  '
-                          '${r.speedKmh.toStringAsFixed(1)} km/h',
-                        ),
-                        subtitle: Text(
-                          'Grade: ${r.gradePercent?.toStringAsFixed(2) ?? "N/A"}%  •  '
-                          'Curve: $curveStr',
-                        ),
-                        trailing: Text(
-                          _formatTimestamp(r.timestamp),
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey,
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: isTracking && !tracker.isBusy
+                                ? () => markStation(context, tracker)
+                                : null,
+                            icon: const Icon(Icons.add_location_alt),
+                            label: const Text('Mark Station'),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(48),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                            ),
                           ),
                         ),
-                      );
-                    },
+                      ],
+                    ),
                   ),
-          ),
-        ],
+                ],
+              ),
+            );
+            final lists = Column(
+              children: [
+                TabBar(
+                  tabs: [
+                    Tab(text: 'Records (${records.length})'),
+                    Tab(text: 'Stations (${stations.length})'),
+                  ],
+                ),
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      records.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'No records yet.\nStart tracking and travel 50 m.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            )
+                          : ListView.builder(
+                              reverse: true,
+                              itemCount: records.length,
+                              itemBuilder: (ctx, i) {
+                                final r = records[records.length - 1 - i];
+
+                                // Curvature display: percent + radius.
+                                String curveStr;
+                                if (r.curvaturePercent == null) {
+                                  curveStr = '—';
+                                } else {
+                                  final pct = r.curvaturePercent!;
+                                  final radiusStr = r.curveRadiusM != null
+                                      ? 'R=${r.curveRadiusM!.toInt()}m'
+                                      : 'R=∞';
+                                  curveStr =
+                                      '${pct.toStringAsFixed(3)}% ($radiusStr)';
+                                }
+
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.blueGrey,
+                                    child: Text(
+                                      '${r.index}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                  title: Text(
+                                    '${r.totalDistanceM.toInt()} m  •  '
+                                    '${r.speedKmh.toStringAsFixed(1)} km/h',
+                                  ),
+                                  subtitle: Text(
+                                    'Grade: ${r.gradePercent?.toStringAsFixed(2) ?? "N/A"}%  •  '
+                                    'Curve: $curveStr',
+                                  ),
+                                  trailing: Text(
+                                    formatClockTime(r.timestamp),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                      StationList(
+                        stations: stations,
+                        currentStopId: currentStop?.id,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+            // A phone in landscape: controls on the left, lists on the right,
+            // so Start/Stop and Mark Station always stay on screen.
+            if (constraints.maxWidth > constraints.maxHeight &&
+                constraints.maxHeight < 500) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: header),
+                  const VerticalDivider(width: 1),
+                  Expanded(child: lists),
+                ],
+              );
+            }
+            // Portrait: header on top. If it is ever taller than 60% of the
+            // screen it scrolls instead of squeezing the lists to nothing.
+            return Column(
+              children: [
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: constraints.maxHeight * 0.6,
+                  ),
+                  child: header,
+                ),
+                Expanded(child: lists),
+              ],
+            );
+          },
+        ),
       ),
     );
-  }
-
-  String _formatTimestamp(String timestamp) {
-    final time = DateTime.tryParse(timestamp)?.toLocal();
-    if (time == null) return '—';
-    return '${time.hour.toString().padLeft(2, '0')}:'
-        '${time.minute.toString().padLeft(2, '0')}:'
-        '${time.second.toString().padLeft(2, '0')}';
   }
 
   void _confirmNewSession(BuildContext context, TrackingNotifier tracker) {
@@ -160,7 +238,8 @@ class DashboardScreen extends ConsumerWidget {
       builder: (_) => AlertDialog(
         title: const Text('New Session?'),
         content: const Text(
-          'This will stop tracking and delete all current records. '
+          'This will stop tracking and delete all current records '
+          'and stations. '
           'Export first if you need the data.',
         ),
         actions: [
@@ -182,7 +261,11 @@ class DashboardScreen extends ConsumerWidget {
 }
 
 class _StatsPanel extends StatelessWidget {
-  final double speedKmh;
+  /// Null while GPS is weak or lost: the last speed is no longer current.
+  final double? speedKmh;
+
+  /// "Waiting for GPS…" or "Weak GPS…" while tracking without a recent fix.
+  final String? gpsStatus;
   final double totalDistance;
   final double nextThreshold;
   final double altitude;
@@ -190,14 +273,19 @@ class _StatsPanel extends StatelessWidget {
   final bool isTracking;
   final Duration elapsed;
 
+  /// Arrival time of the stop in progress, if the train is standing.
+  final String? stoppedSince;
+
   const _StatsPanel({
     required this.speedKmh,
+    this.gpsStatus,
     required this.totalDistance,
     required this.nextThreshold,
     required this.altitude,
     required this.recordCount,
     required this.isTracking,
     required this.elapsed,
+    this.stoppedSince,
   });
 
   @override
@@ -210,7 +298,9 @@ class _StatsPanel extends StatelessWidget {
       child: Column(
         children: [
           Text(
-            '${speedKmh.toStringAsFixed(1)} km/h',
+            speedKmh == null
+                ? '— km/h'
+                : '${speedKmh!.toStringAsFixed(1)} km/h',
             style: Theme.of(
               context,
             ).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold),
@@ -224,17 +314,39 @@ class _StatsPanel extends StatelessWidget {
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
+          if (gpsStatus != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                gpsStatus!,
+                style: TextStyle(
+                  color: Colors.amber.shade900,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          if (stoppedSince != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Stopped since ${formatClockTime(stoppedSince!)}',
+                style: TextStyle(
+                  color: Colors.orange.shade800,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _StatChip(
                 label: 'Distance',
-                value: _formatDistance(totalDistance),
+                value: formatDistance(totalDistance),
               ),
               _StatChip(
                 label: 'Next Log',
-                value: _formatDistance(nextThreshold),
+                value: formatDistance(nextThreshold),
               ),
               _StatChip(
                 label: 'Altitude',
@@ -246,11 +358,6 @@ class _StatsPanel extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  String _formatDistance(double m) {
-    if (m >= 1000) return '${(m / 1000).toStringAsFixed(2)} km';
-    return '${m.toInt()} m';
   }
 
   /// Format a [Duration] as HH:MM:SS.

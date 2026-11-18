@@ -36,8 +36,36 @@ class LocationService {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    return permission == LocationPermission.whileInUse ||
+    final granted =
+        permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always;
+    if (granted && Platform.isAndroid) await _requestNotificationPermission();
+    return granted;
+  }
+
+  /// False when only approximate location was granted (Android 12+
+  /// "Approximate", or iOS with "Precise Location" off). Those fixes are about
+  /// a kilometre off and all fail the 20 m accuracy filter, so nothing would
+  /// be logged. Platforms that cannot tell are treated as precise.
+  Future<bool> hasPreciseLocation() async {
+    try {
+      return await Geolocator.getLocationAccuracy() !=
+          LocationAccuracyStatus.reduced;
+    } catch (error) {
+      debugPrint('[LocationService] Accuracy check failed: $error');
+      return true;
+    }
+  }
+
+  /// Android 13+ hides the "Logging train movement" notification unless the
+  /// user allows notifications. Tracking works either way, so a refusal or an
+  /// error is ignored; older Android versions grant this automatically.
+  Future<void> _requestNotificationPermission() async {
+    try {
+      await perm.Permission.notification.request();
+    } catch (error) {
+      debugPrint('[LocationService] Notification permission failed: $error');
+    }
   }
 
   /// Check current permission state (useful for UI).

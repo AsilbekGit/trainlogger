@@ -32,7 +32,9 @@ import '../models/tracking_session.dart';
 /// 1. Reject invalid/stale fixes and accuracy worse than [kMaxAccuracyM].
 /// 2. Ignore distance below [kMinSpeedMs] or with unavailable speed (-1 on iOS).
 /// 3. Reject point-to-point jumps smaller than [kMinMovementM].
-/// 4. Reject point-to-point jumps larger than [kMaxJumpM].
+/// 4. Reject point-to-point jumps larger than [kMaxJumpM] that would need a
+///    speed above [kMaxSpeedMs]. A plausible gap (tunnel, weak GPS under a
+///    roof) is bridged with straight-line distance instead of being lost.
 /// 5. Cap instantaneous speed at [kMaxSpeedMs].
 class TrackingService {
   final TrackingSession session;
@@ -101,10 +103,18 @@ class TrackingService {
           );
 
     if (previous != null && dist > kMaxJumpM) {
-      // A rejected jump must not become the origin for the next measurement.
-      // Reacquire a baseline on the next fix and discard cross-gap geometry.
-      resetPositionHistory();
-      return [];
+      // Only a jump the train could not have made since the last accepted fix
+      // is a GPS glitch. After a tunnel the first good fix can be a kilometre
+      // away yet entirely plausible; that gap is bridged below as a straight
+      // segment, so its distance and 50 m marks are kept.
+      final seconds =
+          pos.timestamp.difference(previous.time).inMicroseconds / 1e6;
+      if (seconds <= 0 || dist / seconds > kMaxSpeedMs) {
+        // A rejected jump must not become the origin for the next measurement.
+        // Reacquire a baseline on the next fix and discard cross-gap geometry.
+        resetPositionHistory();
+        return [];
+      }
     }
 
     _pushAltitude(pos.altitude);
@@ -121,7 +131,23 @@ class TrackingService {
     session.currentAltitude = altitude;
     session.currentSpeedKmh = speedMs < kMinSpeedMs ? 0.0 : speedMs * 3.6;
 
-    if (speedMs < kMinSpeedMs) return [];
+    if (speedMs < kMinSpeedMs) {
+      if (previous != null && pos.speed >= 0) {
+        // Standing still adds no distance, so the baseline keeps its position.
+        // Its time moves forward, though: otherwise the first 50 m mark after
+        // a stop is timed, and its speed interpolated, across the whole dwell.
+        // Unknown speed (-1 on iOS) may still be movement, so it is skipped.
+        session.previousPoint = GpsPoint(
+          lat: previous.lat,
+          lon: previous.lon,
+          altitude: previous.altitude,
+          speedMs: speedMs,
+          accuracy: previous.accuracy,
+          time: point.time,
+        );
+      }
+      return [];
+    }
 
     final records = <LogRecord>[];
     if (previous != null) {
