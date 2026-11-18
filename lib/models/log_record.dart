@@ -59,22 +59,4 @@ class LogRecord {
     this.curvaturePercent,
     this.curveRadiusM,
   });
-
-  /// CSV header row.
-  static String get csvHeader =>
-      'index,timestamp,latitude,longitude,speed_kmh,altitude_m,'
-      'segment_distance_m,elevation_delta_m,grade_percent,'
-      'curvature_percent,curve_radius_m,total_distance_m';
-
-  /// Convert this record to a CSV row.
-  String toCsvRow() {
-    return '$index,$timestamp,$latitude,$longitude,'
-        '${speedKmh.toStringAsFixed(2)},${altitudeM.toStringAsFixed(2)},'
-        '${segmentDistanceM.toStringAsFixed(2)},'
-        '${elevationDeltaM?.toStringAsFixed(2) ?? ""},'
-        '${gradePercent?.toStringAsFixed(3) ?? ""},'
-        '${curvaturePercent?.toStringAsFixed(4) ?? ""},'
-        '${curveRadiusM?.toStringAsFixed(1) ?? ""},'
-        '${totalDistanceM.toStringAsFixed(2)}';
-  }
 }

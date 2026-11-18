@@ -587,5 +587,89 @@ void main() {
       }
       expect(records.last.curvaturePercent, closeTo(0.0, 1e-9));
     });
+
+    test('a gap the train could cover is bridged, not lost', () {
+      final session = TrackingSession();
+      final svc = TrackingService(session);
+      final t0 = DateTime.utc(2026);
+      Position at(double northM, int second, {double accuracy = 5.0}) => mkPos(
+        northM / 111320.0,
+        0.0,
+        speed: 30.0,
+        accuracy: accuracy,
+        time: t0.add(Duration(seconds: second)),
+      );
+      final records = <LogRecord>[];
+      for (var s = 0; s <= 10; s++) {
+        records.addAll(svc.processPosition(at(s * 30.0, s)));
+      }
+      // A 30 s tunnel: every fix is too inaccurate to use.
+      for (var s = 11; s <= 40; s++) {
+        records.addAll(svc.processPosition(at(s * 30.0, s, accuracy: 80)));
+      }
+      // ~920 m in 31 s is a believable 30 m/s, so it is real travel.
+      records.addAll(svc.processPosition(at(41 * 30.0, 41)));
+
+      final travelled = TrackingService.geodesicDistance(
+        0,
+        0,
+        1230 / 111320.0,
+        0,
+      );
+      expect(session.totalDistanceMeters, closeTo(travelled, 0.01));
+      expect(records.map((r) => r.totalDistanceM), [
+        for (var m = 50.0; m <= travelled; m += 50) m,
+      ]);
+      final inGap = records
+          .where((r) => r.totalDistanceM > 320)
+          .map((r) => DateTime.parse(r.timestamp));
+      expect(inGap.first.isAfter(t0.add(const Duration(seconds: 10))), isTrue);
+      expect(inGap.last.isBefore(t0.add(const Duration(seconds: 41))), isTrue);
+    });
+
+    test('a jump faster than the speed cap is still rejected', () {
+      final session = TrackingSession();
+      final svc = TrackingService(session);
+      final t0 = DateTime.utc(2026);
+      svc.processPosition(mkPos(0.0, 0.0, time: t0));
+      svc.processPosition(
+        mkPos(30 / 111320.0, 0.0, time: t0.add(const Duration(seconds: 1))),
+      );
+      final distance = session.totalDistanceMeters;
+      // 600 m in 5 s would be 120 m/s.
+      expect(
+        svc.processPosition(
+          mkPos(630 / 111320.0, 0.0, time: t0.add(const Duration(seconds: 6))),
+        ),
+        isEmpty,
+      );
+      expect(session.previousPoint, isNull);
+      expect(session.totalDistanceMeters, distance);
+    });
+
+    test('a 50 m mark right after a stop is timed after the stop', () {
+      final session = TrackingSession();
+      final svc = TrackingService(session);
+      final t0 = DateTime.utc(2026);
+      Position at(double northM, int second, double speed) => mkPos(
+        northM / 111320.0,
+        0.0,
+        speed: speed,
+        time: t0.add(Duration(seconds: second)),
+      );
+      svc.processPosition(at(0, 0, 10));
+      svc.processPosition(at(20, 2, 10));
+      svc.processPosition(at(45, 5, 5));
+      // Standing for a minute, 1 m past the last moving fix.
+      for (var s = 6; s <= 65; s++) {
+        expect(svc.processPosition(at(46, s, 0)), isEmpty);
+      }
+      final records = svc.processPosition(at(52, 67, 3));
+
+      expect(records, hasLength(1));
+      final time = DateTime.parse(records.single.timestamp);
+      expect(time.isAfter(t0.add(const Duration(seconds: 65))), isTrue);
+      expect(records.single.speedKmh, lessThanOrEqualTo(3 * 3.6));
+    });
   });
 }

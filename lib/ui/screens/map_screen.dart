@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
+import '../../models/station_event.dart';
 import '../../services/providers.dart';
+import 'station_list.dart';
 import 'tracking_controls.dart';
 
 /// Live map tab.
@@ -15,6 +17,8 @@ import 'tracking_controls.dart';
 ///   appended when ≥ 10 m from the previous vertex).
 /// - A green marker shows the **start** of the route.
 /// - A red train icon marker shows the **current** GPS position.
+/// - Orange markers show automatic stops; purple markers show stations the
+///   user marked.
 /// - When *auto-follow* is enabled (default), the `MapController` pans
 ///   the camera to the latest position on every GPS tick.
 class MapScreen extends ConsumerStatefulWidget {
@@ -50,6 +54,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final tracker = ref.watch(trackingProvider);
     final polyline = tracker.polyline;
     final current = tracker.currentLatLng;
+    final stations = tracker.stations;
 
     // Start point = first point in polyline (if any).
     final LatLng? startPoint = polyline.isNotEmpty ? polyline.first : null;
@@ -145,6 +150,26 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       ),
                     ),
 
+                  // Stops and marked stations, under the train marker.
+                  for (final station in stations)
+                    Marker(
+                      point: LatLng(station.latitude, station.longitude),
+                      width: 26,
+                      height: 26,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: stationColor(station.type),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: Icon(
+                          stationIcon(station.type),
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                      ),
+                    ),
+
                   // Red train icon at current position.
                   if (current != null)
                     Marker(
@@ -189,7 +214,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 if (tracker.errorMessage != null)
                   TrackingErrorBanner(message: tracker.errorMessage!),
                 _MapOverlay(
-                  speedKmh: tracker.speedKmh,
+                  speedKmh: tracker.isGpsStale ? null : tracker.speedKmh,
                   totalDistance: tracker.totalDistanceM,
                   nextThreshold: tracker.nextThresholdM,
                   isTracking: tracker.isTracking,
@@ -201,9 +226,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           ),
 
           // ── Legend ───────────────────────────────────────────
-          if (polyline.isNotEmpty)
+          // Hidden on short screens (landscape), where it would cover the
+          // stats card.
+          if ((polyline.isNotEmpty || stations.isNotEmpty) &&
+              MediaQuery.sizeOf(context).height >= 600)
             Positioned(
-              bottom: 80,
+              // Above the Start/Stop button, and Mark Station while tracking.
+              bottom: tracker.isTracking ? 160 : 92,
               left: 16,
               child: Card(
                 elevation: 3,
@@ -225,6 +254,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       _legendItem(Colors.blue.shade700, 'Path'),
                       const SizedBox(height: 4),
                       _legendItem(Colors.red, 'Current'),
+                      const SizedBox(height: 4),
+                      _legendItem(
+                        stationColor(StationEventType.autoStop),
+                        'Stop',
+                      ),
+                      const SizedBox(height: 4),
+                      _legendItem(
+                        stationColor(StationEventType.manualMark),
+                        'Marked station',
+                      ),
                     ],
                   ),
                 ),
@@ -264,6 +303,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 },
                 backgroundColor: Colors.blueGrey,
                 child: const Icon(Icons.zoom_out_map, color: Colors.white),
+              ),
+            ),
+
+          // ── Mark Station on map ─────────────────────────────
+          if (tracker.isTracking)
+            Positioned(
+              bottom: 92,
+              left: 16,
+              child: FloatingActionButton.extended(
+                heroTag: 'markstation',
+                onPressed: tracker.isBusy
+                    ? null
+                    : () => markStation(context, tracker),
+                backgroundColor: stationColor(StationEventType.manualMark),
+                icon: const Icon(Icons.add_location_alt, color: Colors.white),
+                label: const Text(
+                  'Mark Station',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ),
 
@@ -344,7 +402,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 // ── Map overlay panel ───────────────────────────────────────────────
 
 class _MapOverlay extends StatelessWidget {
-  final double speedKmh;
+  /// Null while GPS is weak or lost.
+  final double? speedKmh;
   final double totalDistance;
   final double nextThreshold;
   final bool isTracking;
@@ -371,8 +430,13 @@ class _MapOverlay extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            _item('Speed', '${speedKmh.toStringAsFixed(1)} km/h'),
-            _item('Dist', _fmt(totalDistance)),
+            _item(
+              'Speed',
+              speedKmh == null
+                  ? '— km/h'
+                  : '${speedKmh!.toStringAsFixed(1)} km/h',
+            ),
+            _item('Dist', formatDistance(totalDistance)),
             _item('Time', _fmtDuration(elapsed)),
             _item('Logs', '$recordCount'),
             Icon(
@@ -396,11 +460,6 @@ class _MapOverlay extends StatelessWidget {
       Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey)),
     ],
   );
-
-  String _fmt(double m) {
-    if (m >= 1000) return '${(m / 1000).toStringAsFixed(2)} km';
-    return '${m.toInt()} m';
-  }
 
   /// Format a [Duration] as HH:MM:SS.
   String _fmtDuration(Duration d) {
