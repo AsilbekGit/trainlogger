@@ -21,6 +21,40 @@ permissions are also declared for macOS. The other generated platform folders
 are not a guarantee of support: file storage uses `dart:io`, so the current
 implementation is not web compatible, and Linux location support is not wired.
 
+## Build with Xcode (iOS)
+
+A fresh clone does not build in Xcode straight away. Xcode needs files that
+Flutter and CocoaPods generate on each machine (`ios/Flutter/Generated.xcconfig`,
+`ios/Pods` and the plugin packages), and these are deliberately not in git.
+You need Xcode, Flutter 3.38 or newer, and CocoaPods.
+
+1. From the project folder, generate them:
+
+   ```sh
+   flutter pub get
+   cd ios && pod install
+   ```
+
+   Run both again after pulling changes to `pubspec.yaml`.
+2. Open `ios/Runner.xcworkspace`, not `Runner.xcodeproj`.
+3. Choose a specific simulator, such as iPhone 17, and press Run.
+
+With Flutter 3.38 and Xcode 27.2, the generic "Any iOS Simulator Device"
+destination fails with "Flutter.framework does not contain architectures".
+Xcode's `lipo` no longer accepts the multi-architecture check Flutter runs for
+that destination. A specific simulator or device builds one architecture and
+works.
+
+To install on a real iPhone, open Runner > Signing & Capabilities and choose
+your own team; the project has the maintainer's team selected. Also change
+the bundle identifier from `com.example.trainLogger` to one you own, such as
+`com.yourname.trainlogger`. Apple does not register `com.example` identifiers
+for signing.
+
+In the Simulator, a custom location or a `simctl location start` route reports
+no speed, so the app logs no distance. Use Features > Location > Freeway Drive
+instead.
+
 ## Data flow
 
 1. `LocationService` requests location permission and supplies GPS fixes.
